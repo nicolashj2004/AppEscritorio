@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mis Finanzas</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💳</text></svg>">
+  <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><span class="brand-logo">💳</span> Mis Finanzas</div>
+      <nav>
+        <a href="#dashboard" data-view="dashboard"><span>📊</span> Dashboard</a>
+        <a href="#movimientos" data-view="movimientos"><span>🧾</span> Movimientos</a>
+        <a href="#tarjetas" data-view="tarjetas"><span>💳</span> Tarjetas</a>
+        <a href="#presupuesto" data-view="presupuesto"><span>🗂️</span> Categorías y presupuesto</a>
+        <a href="#fijos" data-view="fijos"><span>🔁</span> Gastos fijos</a>
+        <a href="#metas" data-view="metas"><span>🎯</span> Metas de ahorro</a>
+        <a href="#ajustes" data-view="ajustes"><span>⚙️</span> Ajustes</a>
+      </nav>
+      <div class="sidebar-foot">Tus datos se guardan solo en este equipo.</div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <button class="icon-btn menu-btn" id="menuBtn" aria-label="Menú">☰</button>
+        <h1 id="viewTitle">Dashboard</h1>
+        <div class="month-nav" id="monthNav">
+          <button class="icon-btn" id="prevMonth" aria-label="Mes anterior">‹</button>
+          <label class="month-label">
+            <span id="monthLabel"></span>
+            <input type="month" id="monthInput" aria-label="Elegir mes">
+          </label>
+          <button class="icon-btn" id="nextMonth" aria-label="Mes siguiente">›</button>
+          <button class="btn btn-ghost btn-sm" id="todayBtn">Hoy</button>
+        </div>
+        <div class="topbar-actions">
+          <button class="icon-btn" id="themeBtn" aria-label="Cambiar tema" title="Cambiar tema">🌓</button>
+          <button class="btn btn-primary" id="quickAdd">+ Movimiento</button>
+        </div>
+      </header>
+
+      <section class="content" id="content" aria-live="polite"></section>
+    </main>
+  </div>
+
+  <dialog id="modal">
+    <form method="dialog" id="modalForm" novalidate>
+      <header class="modal-head">
+        <h2 id="modalTitle"></h2>
+        <button type="button" class="icon-btn" id="modalClose" aria-label="Cerrar">✕</button>
+      </header>
+      <div class="modal-body" id="modalBody"></div>
+      <p class="form-error" id="modalError" role="alert"></p>
+      <footer class="modal-foot">
+        <button type="button" class="btn btn-ghost" id="modalCancel">Cancelar</button>
+        <button type="submit" class="btn btn-primary" id="modalSubmit">Guardar</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status"></div>
+
+  <script src="/static/vendor/chart.umd.min.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
