@@ -88,6 +88,12 @@ CREATE TABLE IF NOT EXISTS investments (
     created_at TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
+-- TRM (pesos colombianos por dólar) por mes, para convertir inversiones en USD
+CREATE TABLE IF NOT EXISTS fx_rates (
+    month TEXT PRIMARY KEY,
+    rate  REAL NOT NULL CHECK (rate > 0)
+);
+
 -- kind: contribution (aporte) | withdrawal (retiro) | valuation (valor actual)
 CREATE TABLE IF NOT EXISTS investment_moves (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -152,6 +158,9 @@ def migrate(conn):
     cols = {r[1] for r in conn.execute("PRAGMA table_info(transactions)")}
     if "period" not in cols:
         conn.execute("ALTER TABLE transactions ADD COLUMN period TEXT")
+    inv_cols = {r[1] for r in conn.execute("PRAGMA table_info(investments)")}
+    if "currency" not in inv_cols:
+        conn.execute("ALTER TABLE investments ADD COLUMN currency TEXT NOT NULL DEFAULT 'COP'")
     conn.executescript(MIGRATIONS)
 
 

@@ -10,6 +10,7 @@
     categories: [],
     cards: [],
     txFilters: { type: "", category_id: "", card_id: "", payment_method: "", q: "" },
+    invDisplay: "COP",
   };
   const charts = [];
 
@@ -64,12 +65,14 @@
   function defaultDateForMonth(month) {
     return month === currentMonth() ? today() : `${month}-01`;
   }
-  function money(v, compact = false) {
-    const opts = { style: "currency", currency: state.settings.currency || "COP", maximumFractionDigits: 0 };
+  function money(v, compact = false, currency = null) {
+    const cur = currency || state.settings.currency || "COP";
+    const opts = { style: "currency", currency: cur, maximumFractionDigits: cur === "USD" ? 2 : 0 };
     if (compact) Object.assign(opts, { notation: "compact", maximumFractionDigits: 1 });
     try { return new Intl.NumberFormat("es-CO", opts).format(v || 0); }
     catch { return `$${Math.round(v || 0).toLocaleString("es-CO")}`; }
   }
+  function fmtRate(v) { return `$ ${Number(v).toLocaleString("es-CO", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`; }
   function pct(v) { return `${(v || 0).toLocaleString("es-CO", { maximumFractionDigits: 1 })}%`; }
   function esc(s) {
     return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -840,14 +843,18 @@
     "Binance", "Hapi", "XTB", "Interactive Brokers", "eToro"];
 
   async function renderInvestments() {
-    const d = await api("GET", `/api/investments?month=${state.month}`);
+    const d = await api("GET", `/api/investments?month=${state.month}&display=${state.invDisplay}`);
     state._inv = d;
+    const mv = (v) => money(v, false, d.display);
+    // Monto en la moneda propia de la inversión cuando difiere de la que se está viendo
+    const native = (h, v) => (h.currency !== d.display ? `<div class="muted" style="font-size:12px">${money(v, false, h.currency)}</div>` : "");
+    const usdShare = (d.by_currency.find((c) => c.name === "USD") || {}).share || 0;
     const t = d.totals;
     const gainCls = (v) => (v > 0 ? "pos" : v < 0 ? "neg" : "");
     const sign = (v) => (v > 0 ? "+" : "");
     const shareRows = (list, labelFn) => list.length ? list.map((g) => `<div class="bar-row">
         <div class="bar-top"><span class="bar-name">${labelFn(g)}</span>
-        <span class="num"><b>${money(g.value)}</b> <span class="muted">${pct(g.share)}</span></span></div>
+        <span class="num"><b>${mv(g.value)}</b> <span class="muted">${pct(g.share)}</span></span></div>
         <div class="meter"><span style="width:${g.share}%"></span></div></div>`).join("")
       : `<div class="empty">Sin inversiones</div>`;
 
@@ -855,10 +862,11 @@
       const open = state._invOpen === h.id;
       return `<tr class="${h.value > 0 ? "" : "muted"}">
         <td><b>${esc(h.name)}</b><div class="muted" style="font-size:12px">${esc(h.asset_icon)} ${esc(h.asset_label)}${h.notes ? ` · ${esc(h.notes)}` : ""}</div></td>
-        <td>${h.platform ? `<span class="tag">${esc(h.platform)}</span>` : '<span class="muted">—</span>'}</td>
-        <td class="right num">${money(h.invested)}</td>
-        <td class="right num"><b>${money(h.value)}</b>${h.last_update ? `<div class="muted" style="font-size:12px">act. ${fmtDate(h.last_update)}</div>` : ""}</td>
-        <td class="right num ${gainCls(h.gain)}">${sign(h.gain)}${money(h.gain)}<div style="font-size:12px">${sign(h.gain_pct)}${pct(h.gain_pct)}</div></td>
+        <td>${h.platform ? `<span class="tag">${esc(h.platform)}</span>` : '<span class="muted">—</span>'}
+          ${h.currency !== "COP" ? `<span class="tag">${esc(h.currency)}</span>` : ""}</td>
+        <td class="right num">${mv(h.invested)}${native(h, h.invested_native)}</td>
+        <td class="right num"><b>${mv(h.value)}</b>${native(h, h.value_native)}${h.last_update ? `<div class="muted" style="font-size:12px">act. ${fmtDate(h.last_update)}</div>` : ""}</td>
+        <td class="right num ${gainCls(h.gain)}">${sign(h.gain)}${mv(h.gain)}<div style="font-size:12px">${sign(h.gain_pct)}${pct(h.gain_pct)}</div></td>
         <td class="right num">${pct(h.share)}</td>
         <td class="row-actions">
           <button class="btn btn-sm btn-primary" data-act="inv-value" data-id="${h.id}" title="Actualizar el valor actual">Actualizar</button>
@@ -877,16 +885,27 @@
     if (hasHistory) d.history = d.history.slice(Math.max(0, Math.min(firstIdx - 1, d.history.length - 2)));
     content.innerHTML = `
       <div class="kpis">
-        <div class="panel kpi"><div class="label">Valor del portafolio</div><div class="value num">${money(t.value)}</div>
+        <div class="panel kpi"><div class="label">Valor del portafolio</div><div class="value num">${mv(t.value)}</div>
           <div class="delta">Al cierre de ${esc(monthName(state.month))}</div></div>
-        <div class="panel kpi"><div class="label">Total aportado</div><div class="value num">${money(t.invested)}</div>
+        <div class="panel kpi"><div class="label">Total aportado</div><div class="value num">${mv(t.invested)}</div>
           <div class="delta">Capital que has puesto</div></div>
         <div class="panel kpi"><div class="label">Ganancia / pérdida</div>
-          <div class="value num ${gainCls(t.gain)}">${sign(t.gain)}${money(t.gain)}</div>
+          <div class="value num ${gainCls(t.gain)}">${sign(t.gain)}${mv(t.gain)}</div>
           <div class="delta"><b class="${gainCls(t.gain_pct)}">${sign(t.gain_pct)}${pct(t.gain_pct)}</b> sobre lo aportado</div></div>
         <div class="panel kpi"><div class="label">Posiciones</div><div class="value num">${t.positions}</div>
-          <div class="delta">En ${t.platforms} aplicación(es)</div></div>
+          <div class="delta">En ${t.platforms} aplicación(es)${usdShare ? ` · ${pct(usdShare)} en USD` : ""}</div></div>
       </div>
+      <div class="panel mb fx-bar">
+        <div class="seg" role="group" aria-label="Moneda para ver el portafolio">
+          ${["COP", "USD"].map((c) => `<label><input type="radio" name="invDisplay" value="${c}" data-act="inv-display" data-id="${c}"${d.display === c ? " checked" : ""}>Ver en ${c}</label>`).join("")}
+        </div>
+        <span>TRM de ${esc(monthName(state.month))}: <b class="num">${d.rate ? fmtRate(d.rate) : "sin definir"}</b>
+          <span class="muted">(pesos por dólar)</span></span>
+        <span class="grow"></span>
+        <button class="btn btn-sm" data-act="fx-edit">✏️ Escribir TRM</button>
+        <button class="btn btn-sm" data-act="fx-official">🌐 Traer TRM oficial</button>
+      </div>
+      ${d.needs_rate ? `<div class="alert warning mb">⚠️ Tienes inversiones en otra moneda: define la TRM para convertirlas; mientras tanto no suman al total.</div>` : ""}
       <div class="toolbar"><span class="grow muted">Registra cada inversión con su aplicación y tipo. Usa <b>Actualizar</b> cuando revises cuánto vale hoy;
         con <b>➕/➖</b> registras aportes y retiros.</span>
         <button class="btn btn-primary" data-act="inv-new">+ Nueva inversión</button></div>
@@ -919,7 +938,11 @@
               backgroundColor: cssVar("--muted"), borderWidth: 2, borderDash: [5, 4], pointRadius: 0, pointHoverRadius: 4, tension: 0.2 },
           ],
         },
-        options: { ...chartBase(), onClick: (_e, els) => { if (els.length) setMonth(d.history[els[0].index].month); } },
+        options: { ...chartBase(),
+          plugins: { legend: { display: false }, tooltip: { callbacks: { label: (ctx) => ` ${ctx.dataset.label}: ${mv(ctx.parsed.y)}` } } },
+          scales: { ...chartBase().scales, y: { ...chartBase().scales.y,
+            ticks: { ...chartBase().scales.y.ticks, callback: (v) => money(v, true, d.display) } } },
+          onClick: (_e, els) => { if (els.length) setMonth(d.history[els[0].index].month); } },
       }));
     }
     if (state._invOpen && $("#invHist")) loadInvestmentHistory(state._invOpen);
@@ -951,10 +974,13 @@
     ];
     if (withAmounts) {
       fields.push(
+        { name: "currency", label: "Moneda de la inversión", type: "seg", full: true,
+          options: [{ value: "COP", label: "Pesos (COP)" }, { value: "USD", label: "Dólares (USD)" }],
+          hint: (v) => (v.currency === "USD" ? "Los montos se registran en dólares y se convierten con la TRM" : "") },
         { name: "invested", label: "Total aportado", type: "number", step: "any", min: 0,
-          hint: "Cuánto dinero has puesto en esta inversión" },
+          hint: (v) => `En ${v.currency === "USD" ? "dólares" : "pesos"}: cuánto dinero has puesto` },
         { name: "value", label: "Valor actual", type: "number", step: "any", min: 0,
-          hint: "Cuánto vale hoy (si no lo sabes, deja el mismo aporte)" },
+          hint: (v) => `En ${v.currency === "USD" ? "dólares" : "pesos"}: cuánto vale hoy` },
         { name: "date", label: "Fecha", type: "date", hint: "Desde cuándo la tienes (o la fecha de hoy)" });
     }
     fields.push({ name: "notes", label: "Notas", type: "textarea", full: true });
@@ -964,7 +990,7 @@
   function openInvestmentForm(h) {
     openForm({
       title: h ? "Editar inversión" : "Nueva inversión",
-      values: h ? { ...h } : { asset_type: "etf", date: defaultDateForMonth(state.month) },
+      values: h ? { ...h } : { asset_type: "etf", currency: "COP", date: defaultDateForMonth(state.month) },
       fields: investmentFields(!h),
       onChange: (name, v, set) => { if (name === "invested" && !h) set("value", v.invested); },
       onSubmit: async (data) => {
@@ -982,10 +1008,10 @@
     openForm({
       title: titles[kind],
       submitLabel: kind === "valuation" ? "Actualizar" : "Guardar",
-      values: { date: defaultDateForMonth(state.month), amount: kind === "valuation" ? h.value : "" },
+      values: { date: defaultDateForMonth(state.month), amount: kind === "valuation" ? h.value_native : "" },
       fields: [
-        { name: "amount", label: kind === "valuation" ? "Valor actual" : "Monto", type: "number", step: "any", min: 0,
-          hint: kind === "valuation" ? `Valor anterior: ${money(h.value)} · Aportado: ${money(h.invested)}` : "" },
+        { name: "amount", label: `${kind === "valuation" ? "Valor actual" : "Monto"} (${h.currency})`, type: "number", step: "any", min: 0,
+          hint: kind === "valuation" ? `Valor anterior: ${money(h.value_native, false, h.currency)} · Aportado: ${money(h.invested_native, false, h.currency)}` : "" },
         { name: "date", label: "Fecha", type: "date" },
         { name: "notes", label: "Notas", type: "textarea", full: true },
       ],
@@ -1088,6 +1114,24 @@
     },
     "new-goal": () => openGoalForm(null),
     "inv-new": () => openInvestmentForm(null),
+    "inv-display": (cur) => { state.invDisplay = cur; storageSet("finanzas.invDisplay", cur); render(); },
+    "fx-edit": () => openForm({
+      title: `TRM de ${monthName(state.month)}`,
+      values: { rate: state._inv?.rate || "" },
+      fields: [{ name: "rate", label: "Pesos colombianos por 1 dólar", type: "number", step: "any", min: 0, full: true,
+        hint: "Se usa para este mes y los siguientes hasta que definas otra. Vacío = quitar la de este mes." }],
+      onSubmit: async (data) => {
+        await api("PUT", "/api/fx-rates", { month: state.month, rate: data.rate });
+        toast("TRM guardada");
+      },
+    }),
+    "fx-official": async () => {
+      try {
+        const r = await api("POST", "/api/fx-rates/official", { month: state.month });
+        toast(`TRM oficial del ${fmtDate(r.date)}: ${fmtRate(r.rate)}`);
+        render();
+      } catch (err) { toast(err.message, true); }
+    },
     "inv-edit": (id) => openInvestmentForm(state._inv.holdings.find((h) => h.id === Number(id))),
     "inv-del": (id) => removeItem("¿Eliminar esta inversión y todo su historial?", `/api/investments/${id}`, "Inversión eliminada"),
     "inv-value": (id) => openInvestmentMove(id, "valuation"),
@@ -1158,6 +1202,7 @@
   });
 
   applyTheme(storageGet("finanzas.theme"));
+  if (storageGet("finanzas.invDisplay") === "USD") state.invDisplay = "USD";
   api("GET", "/api/settings")
     .then((s) => { state.settings = s; })
     .catch(() => {})
