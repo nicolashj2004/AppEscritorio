@@ -71,7 +71,9 @@ CREATE TABLE IF NOT EXISTS transactions (
     installments   INTEGER NOT NULL DEFAULT 1,
     notes          TEXT    NOT NULL DEFAULT '',
     recurring_id   INTEGER REFERENCES recurring(id) ON DELETE SET NULL,
-    created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
+    created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+    -- Mes (AAAA-MM) al que corresponde el movimiento; puede diferir de la fecha
+    period         TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(date);
 CREATE INDEX IF NOT EXISTS idx_tx_card ON transactions(card_id);
@@ -112,10 +114,30 @@ def connect(db_path):
     return conn
 
 
+# Se ejecuta después del esquema para que también aplique a bases ya existentes
+MIGRATIONS = """
+UPDATE transactions SET period = substr(date, 1, 7) WHERE period IS NULL;
+CREATE INDEX IF NOT EXISTS idx_tx_period ON transactions(period);
+CREATE TRIGGER IF NOT EXISTS tx_default_period AFTER INSERT ON transactions
+WHEN NEW.period IS NULL OR NEW.period = ''
+BEGIN
+    UPDATE transactions SET period = substr(NEW.date, 1, 7) WHERE id = NEW.id;
+END;
+"""
+
+
+def migrate(conn):
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(transactions)")}
+    if "period" not in cols:
+        conn.execute("ALTER TABLE transactions ADD COLUMN period TEXT")
+    conn.executescript(MIGRATIONS)
+
+
 def init_db(db_path):
     conn = connect(db_path)
     try:
         conn.executescript(SCHEMA)
+        migrate(conn)
         if conn.execute("SELECT COUNT(*) FROM categories").fetchone()[0] == 0:
             conn.executemany(
                 "INSERT INTO categories (name, type, color, icon) VALUES (?, ?, ?, ?)",
