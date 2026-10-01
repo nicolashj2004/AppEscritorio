@@ -9,6 +9,7 @@ from datetime import date
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
 from . import db
+from . import investments as inv
 
 MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -383,6 +384,8 @@ def build_dashboard(conn, month):
         "card_totals": card_totals,
         "alerts": alerts,
         "pending_recurring": len(pending),
+        "investments": round(sum(
+            st["value"] for st in inv.positions_at(conn, next_month_start(month)).values()), 2),
     }
 
 
@@ -897,6 +900,111 @@ def create_app(db_path=None):
         return "", 204
 
     # --------------------------------------------------------- dashboard
+
+    # ---------------------------------------------------------- inversiones
+
+    def move_payload(data):
+        kind = req_str(data, "kind")
+        if kind not in inv.MOVE_KINDS:
+            raise ApiError("Tipo de movimiento de inversión inválido")
+        move_date = req_str(data, "date")
+        if not DATE_RE.match(move_date):
+            raise ApiError("Fecha inválida, use AAAA-MM-DD")
+        amount = req_num(data, "amount", minimum=0)
+        if kind != "valuation" and amount <= 0:
+            raise ApiError("El monto debe ser mayor a 0")
+        return kind, move_date, amount, req_str(data, "notes", required=False)
+
+    def investment_payload(data):
+        asset_type = req_str(data, "asset_type", required=False) or "otro"
+        if asset_type not in inv.ASSET_TYPES:
+            raise ApiError("Tipo de activo inválido")
+        return (req_str(data, "name"), req_str(data, "platform", required=False), asset_type,
+                req_str(data, "notes", required=False))
+
+    @app.get("/api/investments")
+    def get_portfolio():
+        month = arg_month()
+        months = [shift_month(month, -i) for i in range(11, -1, -1)]
+        data = inv.portfolio(conn(), month, next_month_start(month),
+                             [(m, next_month_start(m)) for m in months])
+        data["asset_types"] = [{"value": k, "label": v[0], "icon": v[1]}
+                               for k, v in inv.ASSET_TYPES.items()]
+        data["platforms"] = [r[0] for r in conn().execute(
+            "SELECT DISTINCT platform FROM investments WHERE platform != '' ORDER BY 1")]
+        return jsonify(data)
+
+    @app.post("/api/investments")
+    def create_investment():
+        data = body()
+        c = conn()
+        fields = investment_payload(data)
+        start = req_str(data, "date")
+        if not DATE_RE.match(start):
+            raise ApiError("Fecha inválida, use AAAA-MM-DD")
+        invested = req_num(data, "invested", minimum=0)
+        if invested <= 0:
+            raise ApiError("Indica cuánto has aportado (mayor a 0)")
+        value = req_num(data, "value", required=False, default=invested, minimum=0)
+        cur = c.execute(
+            "INSERT INTO investments (name, platform, asset_type, notes) VALUES (?, ?, ?, ?)",
+            fields)
+        c.execute("""INSERT INTO investment_moves (investment_id, date, kind, amount, notes)
+                     VALUES (?, ?, 'contribution', ?, 'Aporte inicial')""",
+                  (cur.lastrowid, start, invested))
+        if value != invested:
+            c.execute("""INSERT INTO investment_moves (investment_id, date, kind, amount)
+                         VALUES (?, ?, 'valuation', ?)""", (cur.lastrowid, start, value))
+        c.commit()
+        return jsonify(one(c, "SELECT * FROM investments WHERE id = ?", (cur.lastrowid,))), 201
+
+    @app.put("/api/investments/<int:inv_id>")
+    def update_investment(inv_id):
+        c = conn()
+        ensure_exists(c, "investments", inv_id)
+        c.execute("UPDATE investments SET name = ?, platform = ?, asset_type = ?, notes = ? "
+                  "WHERE id = ?", (*investment_payload(body()), inv_id))
+        c.commit()
+        return jsonify(one(c, "SELECT * FROM investments WHERE id = ?", (inv_id,)))
+
+    @app.delete("/api/investments/<int:inv_id>")
+    def delete_investment(inv_id):
+        c = conn()
+        ensure_exists(c, "investments", inv_id)
+        c.execute("DELETE FROM investments WHERE id = ?", (inv_id,))
+        c.commit()
+        return "", 204
+
+    @app.get("/api/investments/<int:inv_id>/moves")
+    def list_investment_moves(inv_id):
+        c = conn()
+        ensure_exists(c, "investments", inv_id)
+        moves = rows(c.execute(
+            "SELECT * FROM investment_moves WHERE investment_id = ? ORDER BY date, id", (inv_id,)))
+        state = {"invested": 0.0, "value": 0.0}
+        for m in moves:
+            inv.apply_move(state, m["kind"], m["amount"])
+            m["value_after"] = round(state["value"], 2)
+            m["invested_after"] = round(state["invested"], 2)
+        return jsonify(list(reversed(moves)))
+
+    @app.post("/api/investments/<int:inv_id>/moves")
+    def create_investment_move(inv_id):
+        c = conn()
+        ensure_exists(c, "investments", inv_id)
+        cur = c.execute(
+            """INSERT INTO investment_moves (investment_id, kind, date, amount, notes)
+               VALUES (?, ?, ?, ?, ?)""", (inv_id, *move_payload(body())))
+        c.commit()
+        return jsonify(one(c, "SELECT * FROM investment_moves WHERE id = ?", (cur.lastrowid,))), 201
+
+    @app.delete("/api/investments/moves/<int:move_id>")
+    def delete_investment_move(move_id):
+        c = conn()
+        ensure_exists(c, "investment_moves", move_id)
+        c.execute("DELETE FROM investment_moves WHERE id = ?", (move_id,))
+        c.commit()
+        return "", 204
 
     @app.get("/api/dashboard")
     def dashboard():

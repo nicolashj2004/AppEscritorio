@@ -291,5 +291,8 @@ dialog::backdrop { background: rgba(10, 14, 20, .5); }
   .topbar h1 { font-size: 17px; }
   .month-nav { order: 3; width: 100%; justify-content: center; }
   .content { padding: 16px; }
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .kpi { padding: 14px; }
+  .kpi .value { font-size: 18px; }
   .modal-body { grid-template-columns: 1fr; }
 }

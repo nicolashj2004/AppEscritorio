@@ -109,6 +109,31 @@ def main():
                            card_id) VALUES (?, 'Pago tarjeta', ?, 'card_payment', 'transfer', ?)""",
                     (day_in_month(month, 20), round(spent * rnd.uniform(0.7, 1.0), -3), card_id))
 
+    # Inversiones: aporte inicial hace 6 meses, aportes mensuales y valorizaciones
+    for name, platform, asset_type, initial, monthly, growth in [
+        ("ETF S&P 500", "Trii", "etf", 4_000_000, 300_000, 0.012),
+        ("Acciones Ecopetrol", "Trii", "acciones", 1_500_000, 0, -0.008),
+        ("CDT 360 días", "Bancolombia", "renta_fija", 5_000_000, 0, 0.009),
+        ("Fondo de inversión", "Tyba", "fic", 2_000_000, 200_000, 0.007),
+        ("Bitcoin", "Binance", "cripto", 1_000_000, 100_000, 0.03),
+        ("Cajita", "Nu", "ahorro", 3_000_000, 250_000, 0.008),
+    ]:
+        inv_id = conn.execute(
+            "INSERT INTO investments (name, platform, asset_type) VALUES (?, ?, ?)",
+            (name, platform, asset_type)).lastrowid
+        value = invested = 0
+        for back in range(5, -1, -1):
+            month = shift_month(this_month, -back)
+            amount = initial if back == 5 else monthly
+            if amount:
+                conn.execute("""INSERT INTO investment_moves (investment_id, date, kind, amount)
+                                VALUES (?, ?, 'contribution', ?)""", (inv_id, f"{month}-02", amount))
+                value += amount
+            value = round(value * (1 + growth + rnd.uniform(-0.01, 0.01)), -3)
+            conn.execute("""INSERT INTO investment_moves (investment_id, date, kind, amount)
+                            VALUES (?, ?, 'valuation', ?)""",
+                         (inv_id, day_in_month(month, min(28, today.day) if month == this_month else 28), value))
+
     for name, target, saved, deadline, color in [
         ("Fondo de emergencia", 15_000_000, 6_200_000, f"{today.year + 1}-06-30", "#1baf7a"),
         ("Viaje a Cartagena", 3_500_000, 1_100_000, f"{today.year + 1}-01-15", "#eb6834"),

@@ -204,6 +204,48 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(again["period"], "2026-09")
         self.assertIsNotNone(sal)
 
+    def test_investment_portfolio(self):
+        etf = self.post("/api/investments", {"name": "ETF", "platform": "Trii", "asset_type": "etf",
+                                             "date": "2026-08-05", "invested": 1000, "value": 1100})
+        self.post("/api/investments", {"name": "CDT", "platform": "Bancolombia",
+                                        "asset_type": "renta_fija", "date": "2026-09-10",
+                                        "invested": 900})
+        aug = self.client.get("/api/investments?month=2026-08").get_json()
+        self.assertEqual(aug["totals"]["value"], 1100)
+        self.assertEqual(aug["totals"]["gain"], 100)
+        self.assertEqual(len(aug["holdings"]), 1)  # el CDT aún no existía
+
+        # Aporte, actualización de valor y retiro en septiembre
+        self.post(f"/api/investments/{etf['id']}/moves", {"kind": "contribution", "date": "2026-09-01", "amount": 500})
+        self.post(f"/api/investments/{etf['id']}/moves", {"kind": "valuation", "date": "2026-09-20", "amount": 2000})
+        self.post(f"/api/investments/{etf['id']}/moves", {"kind": "withdrawal", "date": "2026-09-25", "amount": 1000})
+        sep = self.client.get("/api/investments?month=2026-09").get_json()
+        h = {x["name"]: x for x in sep["holdings"]}
+        self.assertEqual(h["ETF"]["value"], 1000)
+        self.assertEqual(h["ETF"]["invested"], 750)  # el retiro saca la mitad del capital
+        self.assertEqual(sep["totals"]["value"], 1900)
+        self.assertEqual(h["CDT"]["share"], round(900 / 1900 * 100, 1))
+        platforms = {p["name"]: p["share"] for p in sep["by_platform"]}
+        self.assertEqual(set(platforms), {"Trii", "Bancolombia"})
+        self.assertEqual({t["name"] for t in sep["by_type"]}, {"etf", "renta_fija"})
+        self.assertEqual(sep["history"][-1], {"month": "2026-09", "value": 1900, "invested": 1650})
+        self.assertEqual(sep["history"][-2]["value"], 1100)
+
+        moves = self.client.get(f"/api/investments/{etf['id']}/moves").get_json()
+        self.assertEqual(moves[0]["kind"], "withdrawal")
+        self.assertEqual(moves[0]["value_after"], 1000)
+        self.client.delete(f"/api/investments/moves/{moves[0]['id']}")
+        sep = self.client.get("/api/investments?month=2026-09").get_json()
+        self.assertEqual(sep["totals"]["value"], 2900)
+
+        d = self.client.get("/api/dashboard?month=2026-09").get_json()
+        self.assertEqual(d["investments"], 2900)
+
+        res = self.client.post("/api/investments", json={"name": "X", "asset_type": "nope",
+                                                         "date": "2026-09-01", "invested": 1})
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(self.client.delete(f"/api/investments/{etf['id']}").status_code, 204)
+
     def test_goals_contribution(self):
         goal = self.post("/api/goals", {"name": "Viaje", "target": 1000})
         res = self.client.post(f"/api/goals/{goal['id']}/contribute", json={"amount": 300}).get_json()
