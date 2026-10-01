@@ -120,6 +120,44 @@ class ApiTest(unittest.TestCase):
         self.assertIn("Café", csv_text)
         self.assertIn("Venta", csv_text)
 
+    def test_card_payment_with_category(self):
+        card = self.post("/api/cards", {"name": "Visa", "credit_limit": 1000})
+        cat = self.post("/api/categories", {"name": "Pago tarjetas", "type": "expense"})
+        tx = self.post("/api/transactions", {"date": "2026-09-20", "amount": 400, "type": "card_payment",
+                                             "card_id": card["id"], "category_id": cat["id"]})
+        self.assertEqual(tx["category_name"], "Pago tarjetas")
+        cats = self.client.get("/api/categories?month=2026-09").get_json()
+        self.assertEqual(next(c["spent"] for c in cats if c["id"] == cat["id"]), 400)
+        d = self.client.get("/api/dashboard?month=2026-09").get_json()
+        self.assertEqual(d["totals"]["expense"], 0)  # sigue sin contarse como gasto
+        self.assertEqual(d["totals"]["card_payments"], 400)
+        # una categoría de ingreso no se puede usar en un pago de tarjeta
+        salario = self.category_id("Salario")
+        res = self.client.post("/api/transactions", json={
+            "date": "2026-09-20", "amount": 10, "type": "card_payment",
+            "card_id": card["id"], "category_id": salario})
+        self.assertEqual(res.status_code, 400)
+
+    def test_register_single_recurring(self):
+        luz = self.post("/api/recurring", {"description": "Energía", "amount": 100, "type": "expense", "day": 10})
+        agua = self.post("/api/recurring", {"description": "Agua", "amount": 50, "type": "expense", "day": 12})
+        # Se registra solo uno, con un monto distinto al habitual
+        self.post("/api/transactions", {"date": "2026-09-10", "amount": 130, "type": "expense",
+                                        "description": "Energía", "recurring_id": luz["id"]})
+        recs = {r["id"]: r for r in self.client.get("/api/recurring?month=2026-09").get_json()}
+        self.assertTrue(recs[luz["id"]]["registered"])
+        self.assertFalse(recs[agua["id"]]["registered"])
+        # No se puede registrar dos veces en el mismo mes
+        res = self.client.post("/api/transactions", json={
+            "date": "2026-09-11", "amount": 130, "type": "expense", "recurring_id": luz["id"]})
+        self.assertEqual(res.status_code, 400)
+        # "Registrar todos" solo crea el que faltaba
+        gen = self.client.post("/api/recurring/generate", json={"month": "2026-09"}).get_json()
+        self.assertEqual(gen["created"], 1)
+        # En el mes siguiente vuelve a quedar pendiente
+        recs = {r["id"]: r for r in self.client.get("/api/recurring?month=2026-10").get_json()}
+        self.assertFalse(recs[luz["id"]]["registered"])
+
     def test_goals_contribution(self):
         goal = self.post("/api/goals", {"name": "Viaje", "target": 1000})
         res = self.client.post(f"/api/goals/{goal['id']}/contribute", json={"amount": 300}).get_json()

@@ -16,12 +16,14 @@ el comportamiento. Los datos se guardan en una base de datos SQLite **en tu equi
 - **Navegación entre meses** con las flechas, el selector de mes o el teclado (← / →, T = hoy).
 - **Tarjetas de crédito**: cupo total, deuda, disponible y % de uso calculados al cierre de
   cada mes; días de corte y de pago; compras en cuotas; registro de pagos (los pagos a la
-  tarjeta reducen la deuda y **no** cuentan como gasto, para no contar doble).
+  tarjeta reducen la deuda y **no** cuentan en el total de gastos, para no contar doble; si les
+  asignas una categoría, suman al gasto y presupuesto de esa categoría).
 - **Movimientos**: gastos, ingresos y pagos a tarjeta con categoría, medio de pago, notas;
   filtros, búsqueda y exportación a CSV (se abre en Excel).
 - **Categorías y presupuesto**: crea tus propias categorías; presupuesto por defecto o
   específico para un mes; botón para copiar el presupuesto del mes anterior.
-- **Gastos e ingresos fijos**: arriendo, servicios, salario… se registran en el mes con un clic.
+- **Gastos e ingresos fijos**: arriendo, servicios, salario… se registran uno por uno (con la
+  opción de ajustar el monto ese mes) o todos a la vez.
 - **Metas de ahorro**: objetivo, abonos/retiros y cuánto ahorrar al mes para cumplirla.
 - **Respaldo**: descarga una copia de la base de datos desde *Ajustes*.
 - Tema claro/oscuro y diseño adaptable a pantallas pequeñas.
