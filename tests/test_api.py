@@ -246,6 +246,42 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(res.status_code, 400)
         self.assertEqual(self.client.delete(f"/api/investments/{etf['id']}").status_code, 204)
 
+    def test_investments_in_dollars(self):
+        self.post("/api/investments", {"name": "VOO", "platform": "Trii", "asset_type": "etf",
+                                        "currency": "USD", "date": "2026-09-05",
+                                        "invested": 100, "value": 110})
+        self.post("/api/investments", {"name": "CDT", "platform": "Nu", "asset_type": "renta_fija",
+                                        "date": "2026-09-05", "invested": 1000})
+        # Sin TRM el dólar no se puede convertir
+        sep = self.client.get("/api/investments?month=2026-09").get_json()
+        self.assertTrue(sep["needs_rate"])
+        self.assertEqual(sep["totals"]["value"], 1000)
+
+        self.client.put("/api/fx-rates", json={"month": "2026-09", "rate": 10})
+        sep = self.client.get("/api/investments?month=2026-09").get_json()
+        self.assertFalse(sep["needs_rate"])
+        voo = next(h for h in sep["holdings"] if h["name"] == "VOO")
+        self.assertEqual((voo["value_native"], voo["value"], voo["gain_pct"]), (110, 1100, 10))
+        self.assertEqual(sep["totals"]["value"], 2100)
+        self.assertEqual({c["name"] for c in sep["by_currency"]}, {"USD", "COP"})
+
+        usd = self.client.get("/api/investments?month=2026-09&display=USD").get_json()
+        self.assertEqual(usd["totals"]["value"], 210)
+        # La TRM de septiembre se sigue usando en octubre hasta que se defina otra
+        self.client.put("/api/fx-rates", json={"month": "2026-11", "rate": 20})
+        oct_ = self.client.get("/api/investments?month=2026-10").get_json()
+        self.assertEqual(oct_["rate"], 10)
+        nov = self.client.get("/api/investments?month=2026-11").get_json()
+        self.assertEqual(nov["totals"]["value"], 3200)
+        self.assertEqual(nov["history"][-1]["value"], 3200)
+        self.assertEqual(nov["history"][-2]["value"], 2100)
+        self.assertEqual(self.client.get("/api/dashboard?month=2026-11").get_json()["investments"], 3200)
+
+        res = self.client.post("/api/investments", json={"name": "X", "currency": "EUR",
+                                                         "date": "2026-09-01", "invested": 1})
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(self.client.put("/api/fx-rates", json={"month": "2026-09", "rate": 0}).status_code, 400)
+
     def test_goals_contribution(self):
         goal = self.post("/api/goals", {"name": "Viaje", "target": 1000})
         res = self.client.post(f"/api/goals/{goal['id']}/contribute", json={"amount": 300}).get_json()

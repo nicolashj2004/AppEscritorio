@@ -384,8 +384,7 @@ def build_dashboard(conn, month):
         "card_totals": card_totals,
         "alerts": alerts,
         "pending_recurring": len(pending),
-        "investments": round(sum(
-            st["value"] for st in inv.positions_at(conn, next_month_start(month)).values()), 2),
+        "investments": inv.total_value(conn, month, next_month_start(month), "COP"),
     }
 
 
@@ -926,8 +925,11 @@ def create_app(db_path=None):
     def get_portfolio():
         month = arg_month()
         months = [shift_month(month, -i) for i in range(11, -1, -1)]
+        display = request.args.get("display") or "COP"
+        if display not in inv.CURRENCIES:
+            raise ApiError("Moneda inválida")
         data = inv.portfolio(conn(), month, next_month_start(month),
-                             [(m, next_month_start(m)) for m in months])
+                             [(m, next_month_start(m)) for m in months], display)
         data["asset_types"] = [{"value": k, "label": v[0], "icon": v[1]}
                                for k, v in inv.ASSET_TYPES.items()]
         data["platforms"] = [r[0] for r in conn().execute(
@@ -946,9 +948,12 @@ def create_app(db_path=None):
         if invested <= 0:
             raise ApiError("Indica cuánto has aportado (mayor a 0)")
         value = req_num(data, "value", required=False, default=invested, minimum=0)
+        currency = req_str(data, "currency", required=False) or "COP"
+        if currency not in inv.CURRENCIES:
+            raise ApiError("Moneda inválida")
         cur = c.execute(
-            "INSERT INTO investments (name, platform, asset_type, notes) VALUES (?, ?, ?, ?)",
-            fields)
+            """INSERT INTO investments (name, platform, asset_type, notes, currency)
+               VALUES (?, ?, ?, ?, ?)""", (*fields, currency))
         c.execute("""INSERT INTO investment_moves (investment_id, date, kind, amount, notes)
                      VALUES (?, ?, 'contribution', ?, 'Aporte inicial')""",
                   (cur.lastrowid, start, invested))
@@ -1005,6 +1010,57 @@ def create_app(db_path=None):
         c.execute("DELETE FROM investment_moves WHERE id = ?", (move_id,))
         c.commit()
         return "", 204
+
+    # ------------------------------------------------- TRM (dólar a pesos)
+
+    def fx_month(data):
+        month = req_str(data, "month")
+        if not MONTH_RE.match(month):
+            raise ApiError("Mes inválido")
+        return month
+
+    @app.put("/api/fx-rates")
+    def set_fx_rate():
+        data = body()
+        month = fx_month(data)
+        c = conn()
+        if data.get("rate") in (None, ""):
+            c.execute("DELETE FROM fx_rates WHERE month = ?", (month,))
+        else:
+            rate = req_num(data, "rate")
+            if rate <= 0:
+                raise ApiError("La TRM debe ser mayor a 0")
+            c.execute("INSERT OR REPLACE INTO fx_rates (month, rate) VALUES (?, ?)", (month, rate))
+        c.commit()
+        return jsonify({"month": month, "rate": inv.rate_for(c, month)})
+
+    @app.post("/api/fx-rates/official")
+    def fetch_official_rate():
+        """Trae la TRM oficial (datos.gov.co) del último día del mes, o de hoy."""
+        import json
+        import urllib.parse
+        import urllib.request
+
+        month = fx_month(body())
+        last = day_in_month(month, 31)
+        on = min(last, date.today().isoformat())
+        query = urllib.parse.urlencode({
+            "$where": f"vigenciadesde <= '{on}T00:00:00'",
+            "$order": "vigenciadesde DESC",
+            "$limit": 1,
+        })
+        try:
+            with urllib.request.urlopen(
+                    f"https://www.datos.gov.co/resource/32sa-8pi3.json?{query}", timeout=10) as res:
+                found = json.load(res)
+            rate = float(found[0]["valor"])
+        except Exception:
+            raise ApiError("No se pudo consultar la TRM oficial. Revisa tu conexión a internet "
+                           "o escríbela a mano.", 502)
+        c = conn()
+        c.execute("INSERT OR REPLACE INTO fx_rates (month, rate) VALUES (?, ?)", (month, rate))
+        c.commit()
+        return jsonify({"month": month, "rate": rate, "date": found[0]["vigenciadesde"][:10]})
 
     @app.get("/api/dashboard")
     def dashboard():

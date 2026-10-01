@@ -30,7 +30,8 @@ el comportamiento. Los datos se guardan en una base de datos SQLite **en tu equi
 - **Inversiones**: registra cada inversión con su aplicación (Trii, Tyba, Nu, Binance…) y tipo
   de activo (acciones, ETF, CDT, cripto, pensión voluntaria…); distribución del portafolio por
   tipo y por aplicación, ganancia/pérdida, evolución mes a mes e historial de aportes, retiros
-  y actualizaciones de valor.
+  y actualizaciones de valor. Cada inversión puede estar en **pesos o dólares**; el portafolio
+  se ve en COP o USD usando la TRM del mes (escrita a mano o traída de la TRM oficial).
 - **Metas de ahorro**: objetivo, abonos/retiros y cuánto ahorrar al mes para cumplirla.
 - **Respaldo**: descarga una copia de la base de datos desde *Ajustes*.
 - Tema claro/oscuro y diseño adaptable a pantallas pequeñas.
