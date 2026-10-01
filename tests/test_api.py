@@ -158,6 +158,52 @@ class ApiTest(unittest.TestCase):
         recs = {r["id"]: r for r in self.client.get("/api/recurring?month=2026-10").get_json()}
         self.assertFalse(recs[luz["id"]]["registered"])
 
+    def test_income_period_override(self):
+        # Ingreso pagado el 30 de septiembre que corresponde a octubre
+        tx = self.post("/api/transactions", {"date": "2026-09-30", "amount": 5000, "type": "income",
+                                             "period": "2026-10"})
+        self.assertEqual(tx["period"], "2026-10")
+        sep = self.client.get("/api/dashboard?month=2026-09").get_json()["totals"]
+        oct_ = self.client.get("/api/dashboard?month=2026-10").get_json()["totals"]
+        self.assertEqual(sep["income"], 0)
+        self.assertEqual(oct_["income"], 5000)
+        listed = self.client.get("/api/transactions?month=2026-10").get_json()
+        self.assertEqual([t["id"] for t in listed], [tx["id"]])
+        # Sin período explícito se usa el mes de la fecha
+        tx2 = self.post("/api/transactions", {"date": "2026-09-30", "amount": 10, "type": "expense"})
+        self.assertEqual(tx2["period"], "2026-09")
+        # Gasto con fecha fuera del mes se ubica en el primer día en el ritmo diario
+        self.client.put(f"/api/transactions/{tx2['id']}", json={
+            "date": "2026-09-30", "amount": 10, "type": "expense", "period": "2026-10"})
+        d = self.client.get("/api/dashboard?month=2026-10").get_json()
+        self.assertEqual(d["daily"]["current"][0], 10)
+        res = self.client.post("/api/transactions", json={"date": "2026-09-30", "amount": 1,
+                                                          "type": "income", "period": "oct"})
+        self.assertEqual(res.status_code, 400)
+
+    def test_income_shift_day_setting(self):
+        self.client.put("/api/settings", json={"income_shift_day": 25})
+        late = self.post("/api/transactions", {"date": "2026-09-29", "amount": 100, "type": "income"})
+        early = self.post("/api/transactions", {"date": "2026-09-10", "amount": 100, "type": "income"})
+        expense = self.post("/api/transactions", {"date": "2026-09-29", "amount": 100, "type": "expense"})
+        self.assertEqual(late["period"], "2026-10")
+        self.assertEqual(early["period"], "2026-09")
+        self.assertEqual(expense["period"], "2026-09")
+        # El salario fijo del día 29 para octubre se fecha el 29 de septiembre
+        sal = self.post("/api/recurring", {"description": "Salario", "amount": 100, "type": "income", "day": 29})
+        recs = self.client.get("/api/recurring?month=2026-10").get_json()
+        self.assertEqual(recs[0]["expected_date"], "2026-09-29")
+        self.client.post("/api/recurring/generate", json={"month": "2026-10"})
+        txs = self.client.get("/api/transactions?month=2026-10&q=Salario").get_json()
+        self.assertEqual([(t["date"], t["period"]) for t in txs], [("2026-09-29", "2026-10")])
+        self.assertTrue(self.client.get("/api/recurring?month=2026-10").get_json()[0]["registered"])
+        self.assertFalse(self.client.get("/api/recurring?month=2026-09").get_json()[0]["registered"])
+        # Se puede desactivar
+        self.client.put("/api/settings", json={"income_shift_day": ""})
+        again = self.post("/api/transactions", {"date": "2026-09-29", "amount": 100, "type": "income"})
+        self.assertEqual(again["period"], "2026-09")
+        self.assertIsNotNone(sal)
+
     def test_goals_contribution(self):
         goal = self.post("/api/goals", {"name": "Viaje", "target": 1000})
         res = self.client.post(f"/api/goals/{goal['id']}/contribute", json={"amount": 300}).get_json()

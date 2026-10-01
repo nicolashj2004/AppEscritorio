@@ -53,6 +53,13 @@
     const last = new Date(y, m, 0).getDate();
     return `${month}-${String(Math.min(Math.max(day, 1), last)).padStart(2, "0")}`;
   }
+  // Mes al que corresponde un movimiento por defecto (ver Ajustes → ingresos)
+  function autoPeriod(type, date) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date || "")) return state.month;
+    const month = date.slice(0, 7);
+    const shift = Number(state.settings.income_shift_day) || 0;
+    return type === "income" && shift && Number(date.slice(8, 10)) >= shift ? shiftMonth(month, 1) : month;
+  }
   function defaultDateForMonth(month) {
     return month === currentMonth() ? today() : `${month}-01`;
   }
@@ -151,7 +158,7 @@
    * fields: [{ name, label, type, options, full, hint, showIf(values), required, step, min }]
    * options puede ser un arreglo [{value,label}] o una función (values) => arreglo.
    */
-  function openForm({ title, fields, values = {}, submitLabel = "Guardar", onSubmit }) {
+  function openForm({ title, fields, values = {}, submitLabel = "Guardar", onSubmit, onChange }) {
     const dialog = $("#modal");
     const bodyEl = $("#modalBody");
     $("#modalTitle").textContent = title;
@@ -228,7 +235,11 @@
     });
     refresh();
     fields.forEach((f) => {
-      const handler = () => { current[f.name] = readValue(f.name); refresh(); };
+      const handler = () => {
+        current[f.name] = readValue(f.name);
+        if (onChange) onChange(f.name, current, (name, value) => { current[name] = value; writeValue(name, value); });
+        refresh();
+      };
       inputs[f.name].wrap.addEventListener("change", handler);
       inputs[f.name].wrap.addEventListener("input", () => { current[f.name] = readValue(f.name); });
     });
@@ -280,6 +291,9 @@
     const values = tx ? { ...tx } : {
       type: "expense", date: defaultDateForMonth(state.month), payment_method: "debit", installments: 1, ...preset,
     };
+    if (!values.period) values.period = autoPeriod(values.type, values.date);
+    // Si el usuario elige el mes a mano, ya no se recalcula automáticamente
+    let periodTouched = !!tx || !!preset.period;
     openForm({
       title: tx ? "Editar movimiento" : preset.recurring_id ? "Registrar fijo del mes" : "Nuevo movimiento",
       values,
@@ -288,6 +302,9 @@
           options: Object.entries(TX_TYPES).map(([value, label]) => ({ value, label })) },
         { name: "amount", label: "Monto", type: "number", step: "any", min: 0, placeholder: "0" },
         { name: "date", label: "Fecha", type: "date" },
+        { name: "period", label: "Corresponde al mes", type: "month", full: true,
+          hint: (v) => v.date && v.period && v.period !== v.date.slice(0, 7)
+            ? `Se contará en ${monthName(v.period)} aunque la fecha sea de ${monthName(v.date.slice(0, 7))}` : "" },
         { name: "description", label: "Descripción", type: "text", full: true, placeholder: "Ej: Mercado del mes" },
         { name: "category_id", label: "Categoría", type: "select", full: true,
           options: (v) => categoryOptions(v.type === "income" ? "income" : "expense"),
@@ -303,6 +320,10 @@
           showIf: (v) => v.type === "expense" && v.payment_method === "card" },
         { name: "notes", label: "Notas", type: "textarea", full: true },
       ],
+      onChange: (name, v, set) => {
+        if (name === "period") periodTouched = true;
+        else if ((name === "date" || name === "type") && !periodTouched) set("period", autoPeriod(v.type, v.date));
+      },
       onSubmit: async (data) => {
         if (preset.recurring_id) data.recurring_id = preset.recurring_id;
         if (tx) await api("PUT", `/api/transactions/${tx.id}`, data);
@@ -607,7 +628,8 @@
         ${list.length ? `<div class="table-wrap"><table>
           <thead><tr><th>Fecha</th><th>Descripción</th><th>Categoría</th><th>Tipo</th><th>Medio</th><th class="right">Monto</th><th></th></tr></thead>
           <tbody>${list.map((t) => `<tr>
-            <td class="num">${fmtDate(t.date)}</td>
+            <td class="num">${fmtDate(t.date)}${t.period && t.period !== t.date.slice(0, 7)
+              ? `<div class="muted" style="font-size:12px" title="Cuenta para ${esc(monthName(t.period))}">↪ ${esc(monthName(t.period, true))}</div>` : ""}</td>
             <td>${esc(t.description) || '<span class="muted">—</span>'}${t.notes ? `<div class="muted" style="font-size:12px">${esc(t.notes)}</div>` : ""}</td>
             <td>${t.category_name ? `<span class="tag"><span class="dot" style="background:${esc(t.category_color)}"></span>${esc(t.category_icon)} ${esc(t.category_name)}</span>` : '<span class="muted">—</span>'}</td>
             <td><span class="pill ${t.type}">${TX_TYPES[t.type]}</span></td>
@@ -820,10 +842,23 @@
           Descarga una copia de seguridad de vez en cuando.</p>
           <a class="btn" href="/api/backup">⬇ Descargar respaldo</a>
           <p class="sub" style="margin-top:12px">Para restaurar: cierra la app y reemplaza <code>data/finanzas.db</code> por el archivo de respaldo.</p></div>
+        <div class="panel"><h3>Mes de los ingresos</h3>
+          <p class="sub">Si te pagan al final del mes (por ejemplo el penúltimo día hábil), los ingresos recibidos desde este día
+            se asignarán automáticamente al mes siguiente. Siempre puedes cambiarlo en cada movimiento con "Corresponde al mes".</p>
+          <div class="toolbar"><label for="incomeShift">Desde el día</label>
+            <input type="number" id="incomeShift" min="1" max="31" style="width:90px;min-width:0" placeholder="—"
+              value="${esc(state.settings.income_shift_day || "")}">
+            <span class="muted">Vacío = cada ingreso cuenta en el mes de su fecha</span></div></div>
         <div class="panel"><h3>Datos de ejemplo</h3><p class="sub">¿Quieres probar la app con datos ficticios? Ejecuta <code>python seed_demo.py</code> con la app cerrada.</p></div>
         <div class="panel"><h3>Atajos de teclado</h3><p class="sub" style="margin:0">
           <b>N</b>: nuevo movimiento · <b>←</b>/<b>→</b>: mes anterior/siguiente · <b>T</b>: volver al mes actual</p></div>
       </div>`;
+    $("#incomeShift").addEventListener("change", async (e) => {
+      try {
+        state.settings = await api("PUT", "/api/settings", { income_shift_day: e.target.value });
+        toast(e.target.value ? `Ingresos desde el día ${e.target.value} contarán para el mes siguiente` : "Ajuste desactivado");
+      } catch (err) { toast(err.message, true); }
+    });
     $("#currency").addEventListener("change", async (e) => {
       state.settings = await api("PUT", "/api/settings", { currency: e.target.value });
       toast("Moneda actualizada");
@@ -873,7 +908,7 @@
     "reg-rec": (id) => {
       const r = state._recList.find((x) => x.id === Number(id));
       openTransactionForm(null, {
-        recurring_id: r.id, type: r.type, amount: r.amount, date: dayInMonth(state.month, r.day),
+        recurring_id: r.id, type: r.type, amount: r.amount, date: r.expected_date || dayInMonth(state.month, r.day), period: state.month,
         description: r.description, category_id: r.category_id ?? "", payment_method: r.payment_method,
         card_id: r.card_id ?? "", notes: "Gasto fijo",
       });

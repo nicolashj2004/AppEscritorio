@@ -142,7 +142,7 @@ a { color: var(--primary); }
 .icon-btn:hover { background: var(--surface-2); color: var(--text); }
 .icon-btn.menu-btn { display: none; }
 .icon-btn.small { width: 28px; height: 28px; font-size: 14px; }
-input[type=text], input[type=number], input[type=date], input[type=search], select, textarea {
+input[type=text], input[type=number], input[type=date], input[type=month], input[type=search], select, textarea {
   width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface);
 }
 input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary); outline-offset: -1px; }

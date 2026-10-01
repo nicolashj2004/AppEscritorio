@@ -54,6 +54,28 @@ def day_in_month(month, day):
     return f"{month}-{min(max(int(day), 1), days_in_month(month)):02d}"
 
 
+def income_shift_day(conn):
+    row = conn.execute("SELECT value FROM settings WHERE key = 'income_shift_day'").fetchone()
+    try:
+        day = int(row[0]) if row and row[0] else 0
+    except ValueError:
+        day = 0
+    return day if 1 <= day <= 31 else 0
+
+
+def default_period(conn, tx_type, tx_date):
+    """Mes al que corresponde un movimiento si el usuario no lo indica.
+
+    Los ingresos recibidos desde el día configurado cuentan para el mes siguiente
+    (por ejemplo, un salario pagado al final del mes para el mes que empieza).
+    """
+    month = tx_date[:7]
+    shift = income_shift_day(conn)
+    if tx_type == "income" and shift and int(tx_date[8:10]) >= shift:
+        return shift_month(month, 1)
+    return month
+
+
 def arg_month():
     month = request.args.get("month") or current_month()
     if not MONTH_RE.match(month):
@@ -162,7 +184,6 @@ def card_summaries(conn, month):
 
 
 def category_summaries(conn, month):
-    start, end = month_start(month), next_month_start(month)
     return rows(
         conn.execute(
             """
@@ -173,12 +194,12 @@ def category_summaries(conn, month):
                              WHERE t.category_id = c.id
                                AND (t.type = c.type
                                     OR (c.type = 'expense' AND t.type = 'card_payment'))
-                               AND t.date >= ? AND t.date < ?), 0) AS spent
+                               AND t.period = ?), 0) AS spent
             FROM categories c
             LEFT JOIN budgets b ON b.category_id = c.id AND b.month = ?
             ORDER BY c.type DESC, c.active DESC, c.name
             """,
-            (start, end, month),
+            (month, month),
         )
     )
 
@@ -191,9 +212,9 @@ def month_totals(conn, month):
           COALESCE(SUM(CASE WHEN type = 'expense' THEN amount END), 0) AS expense,
           COALESCE(SUM(CASE WHEN type = 'card_payment' THEN amount END), 0) AS card_payments,
           COUNT(*) AS count
-        FROM transactions WHERE date >= ? AND date < ?
+        FROM transactions WHERE period = ?
         """,
-        (month_start(month), next_month_start(month)),
+        (month,),
     ).fetchone()
     totals = dict(row)
     totals["balance"] = totals["income"] - totals["expense"]
@@ -204,23 +225,30 @@ def month_totals(conn, month):
 
 
 def pending_recurring(conn, month):
-    start, end = month_start(month), next_month_start(month)
     return rows(
         conn.execute(
             """
             SELECT r.* FROM recurring r
             WHERE r.active = 1 AND NOT EXISTS (
               SELECT 1 FROM transactions t
-              WHERE t.recurring_id = r.id AND t.date >= ? AND t.date < ?)
+              WHERE t.recurring_id = r.id AND t.period = ?)
             ORDER BY r.day
             """,
-            (start, end),
+            (month,),
         )
     )
 
 
+def recurring_date(conn, r, month):
+    """Fecha en que se recibe/paga un fijo para que corresponda a `month`."""
+    tx_date = day_in_month(month, r["day"])
+    if default_period(conn, r["type"], tx_date) != month:
+        # Ingreso que llega a fin del mes anterior (p. ej. salario el día 29)
+        tx_date = day_in_month(shift_month(month, -1), r["day"])
+    return tx_date
+
+
 def build_dashboard(conn, month):
-    start, end = month_start(month), next_month_start(month)
     totals = month_totals(conn, month)
     prev = month_totals(conn, shift_month(month, -1))
 
@@ -234,8 +262,8 @@ def build_dashboard(conn, month):
     )
     uncategorized = conn.execute(
         """SELECT COALESCE(SUM(amount), 0) FROM transactions
-           WHERE type = 'expense' AND category_id IS NULL AND date >= ? AND date < ?""",
-        (start, end),
+           WHERE type = 'expense' AND category_id IS NULL AND period = ?""",
+        (month,),
     ).fetchone()[0]
     if uncategorized:
         by_category.append(
@@ -251,14 +279,17 @@ def build_dashboard(conn, month):
                       "balance": t["balance"]})
 
     def cumulative(m):
-        per_day = dict(
-            conn.execute(
-                """SELECT CAST(substr(date, 9, 2) AS INTEGER), SUM(amount)
-                   FROM transactions WHERE type = 'expense' AND date >= ? AND date < ?
-                   GROUP BY 1""",
-                (month_start(m), next_month_start(m)),
-            ).fetchall()
-        )
+        # Los movimientos asignados a este mes con fecha fuera de él se ubican
+        # en el primer o último día del mes
+        last = days_in_month(m)
+        per_day = {}
+        for tx_date, amount in conn.execute(
+            "SELECT date, amount FROM transactions WHERE type = 'expense' AND period = ?",
+            (m,),
+        ):
+            day = 1 if tx_date < month_start(m) else \
+                last if tx_date >= next_month_start(m) else int(tx_date[8:10])
+            per_day[day] = per_day.get(day, 0) + amount
         acc, out = 0, []
         for d in range(1, days_in_month(m) + 1):
             acc += per_day.get(d, 0)
@@ -268,9 +299,9 @@ def build_dashboard(conn, month):
     by_method = rows(
         conn.execute(
             """SELECT payment_method, SUM(amount) AS total FROM transactions
-               WHERE type = 'expense' AND date >= ? AND date < ?
+               WHERE type = 'expense' AND period = ?
                GROUP BY payment_method ORDER BY total DESC""",
-            (start, end),
+            (month,),
         )
     )
 
@@ -281,9 +312,9 @@ def build_dashboard(conn, month):
                FROM transactions t
                LEFT JOIN categories c ON c.id = t.category_id
                LEFT JOIN cards k ON k.id = t.card_id
-               WHERE t.type = 'expense' AND t.date >= ? AND t.date < ?
+               WHERE t.type = 'expense' AND t.period = ?
                ORDER BY t.amount DESC LIMIT 5""",
-            (start, end),
+            (month,),
         )
     )
 
@@ -397,17 +428,20 @@ def create_app(db_path=None):
     def put_settings():
         data = body()
         c = conn()
-        for key in ("currency",):
-            if key in data:
-                c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
-                          (key, req_str(data, key)))
+        if "currency" in data:
+            c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                      ("currency", req_str(data, "currency")))
+        if "income_shift_day" in data:
+            day = opt_day(data, "income_shift_day")
+            c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                      ("income_shift_day", str(day) if day else ""))
         c.commit()
         return get_settings()
 
     @app.get("/api/months")
     def months():
         found = [r[0] for r in conn().execute(
-            "SELECT DISTINCT substr(date, 1, 7) FROM transactions ORDER BY 1 DESC")]
+            "SELECT DISTINCT period FROM transactions ORDER BY 1 DESC")]
         return jsonify({"current": current_month(), "with_data": found})
 
     # ---------------------------------------------------------- tarjetas
@@ -606,9 +640,12 @@ def create_app(db_path=None):
                                     minimum=1))
         if method != "card":
             installments = 1
+        period = req_str(data, "period", required=False) or default_period(c, ttype, tx_date)
+        if not MONTH_RE.match(period):
+            raise ApiError("El mes al que corresponde es inválido, use AAAA-MM")
         return (tx_date, req_str(data, "description", required=False), amount, ttype,
                 category_id, method, card_id, installments,
-                req_str(data, "notes", required=False))
+                req_str(data, "notes", required=False), period)
 
     TX_SELECT = """
         SELECT t.*, c.name AS category_name, c.icon AS category_icon,
@@ -619,8 +656,8 @@ def create_app(db_path=None):
     """
 
     def query_transactions(month):
-        where = ["t.date >= ?", "t.date < ?"]
-        params = [month_start(month), next_month_start(month)]
+        where = ["t.period = ?"]
+        params = [month]
         if request.args.get("type") in TX_TYPES:
             where.append("t.type = ?")
             params.append(request.args["type"])
@@ -656,17 +693,15 @@ def create_app(db_path=None):
         recurring_id = opt_id(data, "recurring_id")
         if recurring_id is not None:
             ensure_exists(c, "recurring", recurring_id)
-            month = payload[0][:7]
             if c.execute(
-                """SELECT 1 FROM transactions
-                   WHERE recurring_id = ? AND date >= ? AND date < ?""",
-                (recurring_id, month_start(month), next_month_start(month)),
+                "SELECT 1 FROM transactions WHERE recurring_id = ? AND period = ?",
+                (recurring_id, payload[-1]),
             ).fetchone():
                 raise ApiError("Este fijo ya está registrado en ese mes")
         cur = c.execute(
             """INSERT INTO transactions (date, description, amount, type, category_id,
-                   payment_method, card_id, installments, notes, recurring_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   payment_method, card_id, installments, notes, period, recurring_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (*payload, recurring_id),
         )
         c.commit()
@@ -679,7 +714,7 @@ def create_app(db_path=None):
         c.execute(
             """UPDATE transactions SET date = ?, description = ?, amount = ?, type = ?,
                    category_id = ?, payment_method = ?, card_id = ?, installments = ?,
-                   notes = ?
+                   notes = ?, period = ?
                WHERE id = ?""",
             (*tx_payload(c, body()), tx_id),
         )
@@ -700,10 +735,10 @@ def create_app(db_path=None):
         labels = {"expense": "Gasto", "income": "Ingreso", "card_payment": "Pago tarjeta"}
         out = io.StringIO()
         writer = csv.writer(out, delimiter=";")
-        writer.writerow(["Fecha", "Tipo", "Descripción", "Categoría", "Medio de pago",
+        writer.writerow(["Fecha", "Mes", "Tipo", "Descripción", "Categoría", "Medio de pago",
                          "Tarjeta", "Cuotas", "Monto", "Notas"])
         for t in query_transactions(month):
-            writer.writerow([t["date"], labels[t["type"]], t["description"],
+            writer.writerow([t["date"], t["period"], labels[t["type"]], t["description"],
                              t["category_name"] or "", t["payment_method"],
                              t["card_name"] or "", t["installments"],
                              f"{t['amount']:.2f}".replace(".", ","), t["notes"]])
@@ -752,6 +787,7 @@ def create_app(db_path=None):
                ORDER BY r.active DESC, r.day"""))
         for r in items:
             r["registered"] = r["active"] and r["id"] not in pending
+            r["expected_date"] = recurring_date(conn(), r, month)
         return jsonify(items)
 
     @app.post("/api/recurring")
@@ -797,10 +833,10 @@ def create_app(db_path=None):
         for r in pending:
             c.execute(
                 """INSERT INTO transactions (date, description, amount, type, category_id,
-                       payment_method, card_id, installments, notes, recurring_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'Gasto fijo', ?)""",
-                (day_in_month(month, r["day"]), r["description"], r["amount"], r["type"],
-                 r["category_id"], r["payment_method"], r["card_id"], r["id"]),
+                       payment_method, card_id, installments, notes, period, recurring_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'Gasto fijo', ?, ?)""",
+                (recurring_date(c, r, month), r["description"], r["amount"], r["type"],
+                 r["category_id"], r["payment_method"], r["card_id"], month, r["id"]),
             )
         c.commit()
         return jsonify({"created": len(pending)})

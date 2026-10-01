@@ -13,6 +13,9 @@ el comportamiento. Los datos se guardan en una base de datos SQLite **en tu equi
   gasto diario vs el mes anterior y el presupuesto; gasto por categoría; medios de pago;
   gastos más grandes y alertas (presupuesto excedido, cupo alto, fecha de pago cercana,
   fijos sin registrar).
+- **Mes al que corresponde cada movimiento**: por defecto es el mes de la fecha, pero puedes
+  cambiarlo (p. ej. el salario pagado el 30 de septiembre cuenta para octubre). En *Ajustes*
+  puedes indicar que los ingresos recibidos desde cierto día pasen automáticamente al mes siguiente.
 - **Navegación entre meses** con las flechas, el selector de mes o el teclado (← / →, T = hoy).
 - **Tarjetas de crédito**: cupo total, deuda, disponible y % de uso calculados al cierre de
   cada mes; días de corte y de pago; compras en cuotas; registro de pagos (los pagos a la
