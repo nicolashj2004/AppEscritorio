@@ -170,7 +170,9 @@ def category_summaries(conn, month):
                    COALESCE(b.amount, c.default_budget) AS budget,
                    b.amount IS NOT NULL AS budget_custom,
                    COALESCE((SELECT SUM(t.amount) FROM transactions t
-                             WHERE t.category_id = c.id AND t.type = c.type
+                             WHERE t.category_id = c.id
+                               AND (t.type = c.type
+                                    OR (c.type = 'expense' AND t.type = 'card_payment'))
                                AND t.date >= ? AND t.date < ?), 0) AS spent
             FROM categories c
             LEFT JOIN budgets b ON b.category_id = c.id AND b.month = ?
@@ -582,7 +584,6 @@ def create_app(db_path=None):
         if ttype == "card_payment":
             if card_id is None:
                 raise ApiError("Selecciona la tarjeta a la que abonas")
-            category_id = None
             if method == "card":
                 method = "transfer"
         elif ttype == "expense" and method == "card":
@@ -596,7 +597,11 @@ def create_app(db_path=None):
         if card_id is not None:
             ensure_exists(c, "cards", card_id)
         if category_id is not None:
-            ensure_exists(c, "categories", category_id)
+            row = c.execute("SELECT type FROM categories WHERE id = ?", (category_id,)).fetchone()
+            if not row:
+                raise ApiError("Registro no encontrado", 404)
+            if row["type"] != ("income" if ttype == "income" else "expense"):
+                raise ApiError("La categoría no corresponde al tipo de movimiento")
         installments = int(req_num(data, "installments", required=False, default=1,
                                     minimum=1))
         if method != "card":
@@ -645,11 +650,24 @@ def create_app(db_path=None):
     @app.post("/api/transactions")
     def create_transaction():
         c = conn()
+        data = body()
+        payload = tx_payload(c, data)
+        # Registro individual de un gasto/ingreso fijo: queda marcado para ese mes
+        recurring_id = opt_id(data, "recurring_id")
+        if recurring_id is not None:
+            ensure_exists(c, "recurring", recurring_id)
+            month = payload[0][:7]
+            if c.execute(
+                """SELECT 1 FROM transactions
+                   WHERE recurring_id = ? AND date >= ? AND date < ?""",
+                (recurring_id, month_start(month), next_month_start(month)),
+            ).fetchone():
+                raise ApiError("Este fijo ya está registrado en ese mes")
         cur = c.execute(
             """INSERT INTO transactions (date, description, amount, type, category_id,
-                   payment_method, card_id, installments, notes)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            tx_payload(c, body()),
+                   payment_method, card_id, installments, notes, recurring_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (*payload, recurring_id),
         )
         c.commit()
         return jsonify(one(c, f"{TX_SELECT} WHERE t.id = ?", (cur.lastrowid,))), 201

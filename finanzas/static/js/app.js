@@ -48,6 +48,11 @@
     return new Date(y, m - 1, 1).toLocaleDateString("es-CO",
       short ? { month: "short", year: "2-digit" } : { month: "long", year: "numeric" });
   }
+  function dayInMonth(month, day) {
+    const [y, m] = month.split("-").map(Number);
+    const last = new Date(y, m, 0).getDate();
+    return `${month}-${String(Math.min(Math.max(day, 1), last)).padStart(2, "0")}`;
+  }
   function defaultDateForMonth(month) {
     return month === currentMonth() ? today() : `${month}-01`;
   }
@@ -175,7 +180,7 @@
         } else {
           html += `<input id="${id}" type="${f.type || "text"}"${f.step ? ` step="${f.step}"` : ""}${f.min !== undefined ? ` min="${f.min}"` : ""}${f.placeholder ? ` placeholder="${esc(f.placeholder)}"` : ""}>`;
         }
-        if (f.hint) html += `<span class="hint">${esc(f.hint)}</span>`;
+        if (f.hint) html += `<span class="hint"></span>`;
       }
       wrap.innerHTML = html;
       bodyEl.appendChild(wrap);
@@ -209,6 +214,12 @@
       fields.forEach((f) => {
         fillOptions(f.name);
         inputs[f.name].wrap.style.display = !f.showIf || f.showIf(current) ? "" : "none";
+        const hintEl = inputs[f.name].wrap.querySelector(".hint");
+        if (hintEl) {
+          const text = typeof f.hint === "function" ? f.hint(current) : f.hint;
+          hintEl.textContent = text || "";
+          hintEl.style.display = text ? "" : "none";
+        }
       });
     }
 
@@ -270,7 +281,7 @@
       type: "expense", date: defaultDateForMonth(state.month), payment_method: "debit", installments: 1, ...preset,
     };
     openForm({
-      title: tx ? "Editar movimiento" : "Nuevo movimiento",
+      title: tx ? "Editar movimiento" : preset.recurring_id ? "Registrar fijo del mes" : "Nuevo movimiento",
       values,
       fields: [
         { name: "type", label: "Tipo", type: "seg", full: true,
@@ -280,7 +291,7 @@
         { name: "description", label: "Descripción", type: "text", full: true, placeholder: "Ej: Mercado del mes" },
         { name: "category_id", label: "Categoría", type: "select", full: true,
           options: (v) => categoryOptions(v.type === "income" ? "income" : "expense"),
-          showIf: (v) => v.type !== "card_payment" },
+          hint: (v) => (v.type === "card_payment" ? "Opcional: el pago sumará al gasto y presupuesto de esta categoría" : "") },
         { name: "payment_method", label: "Medio de pago", type: "select",
           options: (v) => Object.entries(METHODS)
             .filter(([k]) => v.type === "expense" || k !== "card")
@@ -293,6 +304,7 @@
         { name: "notes", label: "Notas", type: "textarea", full: true },
       ],
       onSubmit: async (data) => {
+        if (preset.recurring_id) data.recurring_id = preset.recurring_id;
         if (tx) await api("PUT", `/api/transactions/${tx.id}`, data);
         else await api("POST", "/api/transactions", data);
         toast(tx ? "Movimiento actualizado" : "Movimiento registrado");
@@ -740,8 +752,8 @@
         <div class="panel kpi"><div class="label">Ingresos fijos mensuales</div><div class="value num">${money(totalInc)}</div></div>
         <div class="panel kpi"><div class="label">Pendientes en ${esc(monthName(state.month))}</div><div class="value num">${pending.length}</div></div>
       </div>
-      <div class="toolbar"><span class="grow muted">Define tus gastos e ingresos que se repiten cada mes (arriendo, servicios, salario...) y regístralos con un clic.</span>
-        ${pending.length ? `<button class="btn" data-act="gen-recurring">✅ Registrar ${pending.length} pendiente(s) del mes</button>` : ""}
+      <div class="toolbar"><span class="grow muted">Define tus gastos e ingresos que se repiten cada mes (arriendo, servicios, salario...) y regístralos uno por uno (puedes ajustar el monto) o todos a la vez.</span>
+        ${pending.length ? `<button class="btn" data-act="gen-recurring">✅ Registrar todos (${pending.length})</button>` : ""}
         <button class="btn btn-primary" data-act="new-rec">+ Nuevo fijo</button></div>
       <div class="panel" style="padding:0">
         ${list.length ? `<div class="table-wrap"><table>
@@ -752,7 +764,8 @@
             <td>${r.category_name ? `${esc(r.category_icon)} ${esc(r.category_name)}` : '<span class="muted">—</span>'}</td>
             <td>${esc(METHODS[r.payment_method])}${r.card_name ? `<div class="muted" style="font-size:12px">💳 ${esc(r.card_name)}</div>` : ""}</td>
             <td class="right num"><b>${money(r.amount)}</b></td>
-            <td>${!r.active ? '<span class="pill off">Inactivo</span>' : r.registered ? '<span class="pill ok">Registrado</span>' : '<span class="pill pending">Pendiente</span>'}</td>
+            <td>${!r.active ? '<span class="pill off">Inactivo</span>' : r.registered ? '<span class="pill ok">Registrado</span>'
+              : `<span class="pill pending">Pendiente</span> <button class="btn btn-sm btn-primary" data-act="reg-rec" data-id="${r.id}">Registrar</button>`}</td>
             <td class="row-actions"><button class="icon-btn small" data-act="edit-rec" data-id="${r.id}">✏️</button>
               <button class="icon-btn small" data-act="del-rec" data-id="${r.id}">🗑️</button></td></tr>`).join("")}</tbody></table></div>`
           : `<div class="empty"><div class="big">🔁</div><p>Aún no tienes gastos o ingresos fijos.</p>
@@ -857,6 +870,14 @@
     "new-rec": () => openRecurringForm(null),
     "edit-rec": (id) => openRecurringForm(state._recList.find((r) => r.id === Number(id))),
     "del-rec": (id) => removeItem("¿Eliminar este fijo? Los movimientos ya registrados se conservan.", `/api/recurring/${id}`, "Eliminado"),
+    "reg-rec": (id) => {
+      const r = state._recList.find((x) => x.id === Number(id));
+      openTransactionForm(null, {
+        recurring_id: r.id, type: r.type, amount: r.amount, date: dayInMonth(state.month, r.day),
+        description: r.description, category_id: r.category_id ?? "", payment_method: r.payment_method,
+        card_id: r.card_id ?? "", notes: "Gasto fijo",
+      });
+    },
     "gen-recurring": async () => {
       try {
         const r = await api("POST", "/api/recurring/generate", { month: state.month });
