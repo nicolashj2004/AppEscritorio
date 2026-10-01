@@ -27,6 +27,10 @@ el comportamiento. Los datos se guardan en una base de datos SQLite **en tu equi
   específico para un mes; botón para copiar el presupuesto del mes anterior.
 - **Gastos e ingresos fijos**: arriendo, servicios, salario… se registran uno por uno (con la
   opción de ajustar el monto ese mes) o todos a la vez.
+- **Inversiones**: registra cada inversión con su aplicación (Trii, Tyba, Nu, Binance…) y tipo
+  de activo (acciones, ETF, CDT, cripto, pensión voluntaria…); distribución del portafolio por
+  tipo y por aplicación, ganancia/pérdida, evolución mes a mes e historial de aportes, retiros
+  y actualizaciones de valor.
 - **Metas de ahorro**: objetivo, abonos/retiros y cuánto ahorrar al mes para cumplirla.
 - **Respaldo**: descarga una copia de la base de datos desde *Ajustes*.
 - Tema claro/oscuro y diseño adaptable a pantallas pequeñas.
@@ -67,6 +71,7 @@ Para empezar de cero, cierra la app y borra `data/finanzas.db`.
 run.py                  # arranca el servidor y abre el navegador
 finanzas/db.py          # esquema SQLite y categorías por defecto
 finanzas/app.py         # API REST (Flask) y cálculos del dashboard
+finanzas/investments.py # cálculos del portafolio de inversiones
 finanzas/static/        # interfaz (HTML + CSS + JS, Chart.js incluido: funciona sin internet)
 seed_demo.py            # datos de ejemplo
 tests/                  # pruebas: python -m unittest discover -s tests

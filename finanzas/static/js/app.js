@@ -20,6 +20,7 @@
     presupuesto: { title: "Categorías y presupuesto", render: renderBudget },
     fijos: { title: "Gastos e ingresos fijos", render: renderRecurring },
     metas: { title: "Metas de ahorro", render: renderGoals },
+    inversiones: { title: "Inversiones", render: renderInvestments },
     ajustes: { title: "Ajustes", render: renderSettings },
   };
 
@@ -185,7 +186,8 @@
           html += `<div class="seg" id="${id}">${f.options.map((o) =>
             `<label><input type="radio" name="${f.name}" value="${esc(o.value)}">${esc(o.label)}</label>`).join("")}</div>`;
         } else {
-          html += `<input id="${id}" type="${f.type || "text"}"${f.step ? ` step="${f.step}"` : ""}${f.min !== undefined ? ` min="${f.min}"` : ""}${f.placeholder ? ` placeholder="${esc(f.placeholder)}"` : ""}>`;
+          html += `<input id="${id}" type="${f.type || "text"}"${f.step ? ` step="${f.step}"` : ""}${f.min !== undefined ? ` min="${f.min}"` : ""}${f.placeholder ? ` placeholder="${esc(f.placeholder)}"` : ""}${f.datalist ? ` list="${id}_list" autocomplete="off"` : ""}>`;
+          if (f.datalist) html += `<datalist id="${id}_list">${f.datalist.map((o) => `<option value="${esc(o)}">`).join("")}</datalist>`;
         }
         if (f.hint) html += `<span class="hint"></span>`;
       }
@@ -455,6 +457,8 @@
         delta: ct.limit ? `Uso del cupo: <b class="${utilClass(ct.utilization) === "bad" ? "neg" : ""}">${pct(ct.utilization)}</b>` : `<a href="#tarjetas">Agrega una tarjeta</a>` },
       { label: "Cupo disponible", value: money(ct.available),
         delta: ct.limit ? `De un cupo total de ${money(ct.limit)}` : "" },
+      { label: "Inversiones", value: money(d.investments),
+        delta: `<a href="#inversiones">${d.investments ? "Ver portafolio" : "Registra tus inversiones"}</a>` },
     ];
 
     const alerts = d.alerts.map((a) => `<div class="alert ${a.level}">${esc(a.text)}</div>`).join("");
@@ -830,6 +834,168 @@
          <button class="btn btn-primary" data-act="new-goal">+ Nueva meta</button></div>`}`;
   }
 
+  // --------------------------------------------------------------- inversiones
+  const PLATFORM_SUGGESTIONS = ["Trii", "Tyba", "Nu", "Lulo Bank", "Bancolombia", "Davivienda", "BBVA",
+    "Skandia", "Protección", "Porvenir", "Colfondos", "Acciones & Valores", "Credicorp Capital",
+    "Binance", "Hapi", "XTB", "Interactive Brokers", "eToro"];
+
+  async function renderInvestments() {
+    const d = await api("GET", `/api/investments?month=${state.month}`);
+    state._inv = d;
+    const t = d.totals;
+    const gainCls = (v) => (v > 0 ? "pos" : v < 0 ? "neg" : "");
+    const sign = (v) => (v > 0 ? "+" : "");
+    const shareRows = (list, labelFn) => list.length ? list.map((g) => `<div class="bar-row">
+        <div class="bar-top"><span class="bar-name">${labelFn(g)}</span>
+        <span class="num"><b>${money(g.value)}</b> <span class="muted">${pct(g.share)}</span></span></div>
+        <div class="meter"><span style="width:${g.share}%"></span></div></div>`).join("")
+      : `<div class="empty">Sin inversiones</div>`;
+
+    const holdingRows = d.holdings.map((h) => {
+      const open = state._invOpen === h.id;
+      return `<tr class="${h.value > 0 ? "" : "muted"}">
+        <td><b>${esc(h.name)}</b><div class="muted" style="font-size:12px">${esc(h.asset_icon)} ${esc(h.asset_label)}${h.notes ? ` · ${esc(h.notes)}` : ""}</div></td>
+        <td>${h.platform ? `<span class="tag">${esc(h.platform)}</span>` : '<span class="muted">—</span>'}</td>
+        <td class="right num">${money(h.invested)}</td>
+        <td class="right num"><b>${money(h.value)}</b>${h.last_update ? `<div class="muted" style="font-size:12px">act. ${fmtDate(h.last_update)}</div>` : ""}</td>
+        <td class="right num ${gainCls(h.gain)}">${sign(h.gain)}${money(h.gain)}<div style="font-size:12px">${sign(h.gain_pct)}${pct(h.gain_pct)}</div></td>
+        <td class="right num">${pct(h.share)}</td>
+        <td class="row-actions">
+          <button class="btn btn-sm btn-primary" data-act="inv-value" data-id="${h.id}" title="Actualizar el valor actual">Actualizar</button>
+          <button class="icon-btn small" data-act="inv-add" data-id="${h.id}" title="Aportar">➕</button>
+          <button class="icon-btn small" data-act="inv-sub" data-id="${h.id}" title="Retirar">➖</button>
+          <button class="icon-btn small" data-act="inv-hist" data-id="${h.id}" title="Historial">🕘</button>
+          <button class="icon-btn small" data-act="inv-edit" data-id="${h.id}" title="Editar">✏️</button>
+          <button class="icon-btn small" data-act="inv-del" data-id="${h.id}" title="Eliminar">🗑️</button>
+        </td></tr>
+        ${open ? `<tr><td colspan="7" style="background:var(--surface-2)" id="invHist">Cargando historial…</td></tr>` : ""}`;
+    }).join("");
+
+    const firstIdx = d.history.findIndex((x) => x.value > 0 || x.invested > 0);
+    const hasHistory = firstIdx >= 0;
+    // Desde el mes anterior a la primera inversión (mínimo 2 puntos)
+    if (hasHistory) d.history = d.history.slice(Math.max(0, Math.min(firstIdx - 1, d.history.length - 2)));
+    content.innerHTML = `
+      <div class="kpis">
+        <div class="panel kpi"><div class="label">Valor del portafolio</div><div class="value num">${money(t.value)}</div>
+          <div class="delta">Al cierre de ${esc(monthName(state.month))}</div></div>
+        <div class="panel kpi"><div class="label">Total aportado</div><div class="value num">${money(t.invested)}</div>
+          <div class="delta">Capital que has puesto</div></div>
+        <div class="panel kpi"><div class="label">Ganancia / pérdida</div>
+          <div class="value num ${gainCls(t.gain)}">${sign(t.gain)}${money(t.gain)}</div>
+          <div class="delta"><b class="${gainCls(t.gain_pct)}">${sign(t.gain_pct)}${pct(t.gain_pct)}</b> sobre lo aportado</div></div>
+        <div class="panel kpi"><div class="label">Posiciones</div><div class="value num">${t.positions}</div>
+          <div class="delta">En ${t.platforms} aplicación(es)</div></div>
+      </div>
+      <div class="toolbar"><span class="grow muted">Registra cada inversión con su aplicación y tipo. Usa <b>Actualizar</b> cuando revises cuánto vale hoy;
+        con <b>➕/➖</b> registras aportes y retiros.</span>
+        <button class="btn btn-primary" data-act="inv-new">+ Nueva inversión</button></div>
+      ${d.holdings.length ? `
+      <div class="grid grid-2 mb">
+        <div class="panel"><h3>Por tipo de activo</h3><p class="sub">Cómo está distribuido tu portafolio</p>
+          <div class="bar-list">${shareRows(d.by_type, (g) => `${esc(g.icon)} ${esc(g.label)}`)}</div></div>
+        <div class="panel"><h3>Por aplicación</h3><p class="sub">Dónde tienes tu dinero invertido</p>
+          <div class="bar-list">${shareRows(d.by_platform, (g) => esc(g.name))}</div></div>
+      </div>
+      ${hasHistory ? `<div class="panel mb"><h3>Evolución del portafolio</h3><p class="sub">Valor al cierre de cada mes comparado con lo aportado</p>
+        <div class="legend"><span><i style="background:var(--series-1)"></i>Valor</span><span><i style="background:var(--muted)"></i>Aportado</span></div>
+        <div class="chart-box"><canvas id="invChart" role="img" aria-label="Evolución del valor del portafolio"></canvas></div></div>` : ""}
+      <div class="panel" style="padding:0"><div class="table-wrap"><table>
+        <thead><tr><th>Inversión</th><th>Aplicación</th><th class="right">Aportado</th><th class="right">Valor actual</th>
+          <th class="right">Rendimiento</th><th class="right">% portafolio</th><th></th></tr></thead>
+        <tbody>${holdingRows}</tbody></table></div></div>`
+      : `<div class="panel empty"><div class="big">📈</div><p>Aún no tienes inversiones registradas${state.month !== currentMonth() ? " a este mes" : ""}.</p>
+         <button class="btn btn-primary" data-act="inv-new">+ Registrar inversión</button></div>`}`;
+
+    if (hasHistory && window.Chart && $("#invChart")) {
+      charts.push(new Chart($("#invChart"), {
+        type: "line",
+        data: {
+          labels: d.history.map((x) => monthName(x.month, true)),
+          datasets: [
+            { label: "Valor", data: d.history.map((x) => x.value), borderColor: cssVar("--series-1"),
+              backgroundColor: cssVar("--series-1"), borderWidth: 2, pointRadius: 3, pointHoverRadius: 5, tension: 0.2 },
+            { label: "Aportado", data: d.history.map((x) => x.invested), borderColor: cssVar("--muted"),
+              backgroundColor: cssVar("--muted"), borderWidth: 2, borderDash: [5, 4], pointRadius: 0, pointHoverRadius: 4, tension: 0.2 },
+          ],
+        },
+        options: { ...chartBase(), onClick: (_e, els) => { if (els.length) setMonth(d.history[els[0].index].month); } },
+      }));
+    }
+    if (state._invOpen && $("#invHist")) loadInvestmentHistory(state._invOpen);
+  }
+
+  const MOVE_LABELS = { contribution: "Aporte", withdrawal: "Retiro", valuation: "Actualización de valor" };
+
+  async function loadInvestmentHistory(id) {
+    const cell = $("#invHist");
+    try {
+      const moves = await api("GET", `/api/investments/${id}/moves`);
+      cell.innerHTML = `<b>Historial</b><table style="margin-top:6px"><thead><tr><th>Fecha</th><th>Movimiento</th>
+        <th class="right">Monto</th><th class="right">Valor después</th><th>Notas</th><th></th></tr></thead><tbody>
+        ${moves.map((m) => `<tr><td class="num">${fmtDate(m.date)} ${m.date.slice(0, 4)}</td><td>${MOVE_LABELS[m.kind]}</td>
+          <td class="right num">${m.kind === "withdrawal" ? "−" : m.kind === "contribution" ? "+" : ""}${money(m.amount)}</td>
+          <td class="right num">${money(m.value_after)}</td><td class="muted">${esc(m.notes)}</td>
+          <td class="row-actions"><button class="icon-btn small" data-act="inv-move-del" data-id="${m.id}" title="Eliminar">🗑️</button></td></tr>`).join("")}
+        </tbody></table>`;
+    } catch (err) { cell.textContent = err.message; }
+  }
+
+  function investmentFields(withAmounts) {
+    const fields = [
+      { name: "name", label: "Nombre de la inversión", type: "text", full: true, placeholder: "Ej: ETF S&P 500, CDT 360 días" },
+      { name: "platform", label: "Aplicación / entidad", type: "text", placeholder: "Ej: Trii",
+        datalist: [...new Set([...(state._inv?.platforms || []), ...PLATFORM_SUGGESTIONS])] },
+      { name: "asset_type", label: "Tipo de activo", type: "select",
+        options: (state._inv?.asset_types || []).map((a) => ({ value: a.value, label: `${a.icon} ${a.label}` })) },
+    ];
+    if (withAmounts) {
+      fields.push(
+        { name: "invested", label: "Total aportado", type: "number", step: "any", min: 0,
+          hint: "Cuánto dinero has puesto en esta inversión" },
+        { name: "value", label: "Valor actual", type: "number", step: "any", min: 0,
+          hint: "Cuánto vale hoy (si no lo sabes, deja el mismo aporte)" },
+        { name: "date", label: "Fecha", type: "date", hint: "Desde cuándo la tienes (o la fecha de hoy)" });
+    }
+    fields.push({ name: "notes", label: "Notas", type: "textarea", full: true });
+    return fields;
+  }
+
+  function openInvestmentForm(h) {
+    openForm({
+      title: h ? "Editar inversión" : "Nueva inversión",
+      values: h ? { ...h } : { asset_type: "etf", date: defaultDateForMonth(state.month) },
+      fields: investmentFields(!h),
+      onChange: (name, v, set) => { if (name === "invested" && !h) set("value", v.invested); },
+      onSubmit: async (data) => {
+        if (h) await api("PUT", `/api/investments/${h.id}`, data);
+        else await api("POST", "/api/investments", data);
+        toast(h ? "Inversión actualizada" : "Inversión registrada");
+      },
+    });
+  }
+
+  function openInvestmentMove(id, kind) {
+    const h = state._inv.holdings.find((x) => x.id === Number(id));
+    const titles = { contribution: `Aportar a ${h.name}`, withdrawal: `Retirar de ${h.name}`,
+      valuation: `Actualizar valor de ${h.name}` };
+    openForm({
+      title: titles[kind],
+      submitLabel: kind === "valuation" ? "Actualizar" : "Guardar",
+      values: { date: defaultDateForMonth(state.month), amount: kind === "valuation" ? h.value : "" },
+      fields: [
+        { name: "amount", label: kind === "valuation" ? "Valor actual" : "Monto", type: "number", step: "any", min: 0,
+          hint: kind === "valuation" ? `Valor anterior: ${money(h.value)} · Aportado: ${money(h.invested)}` : "" },
+        { name: "date", label: "Fecha", type: "date" },
+        { name: "notes", label: "Notas", type: "textarea", full: true },
+      ],
+      onSubmit: async (data) => {
+        await api("POST", `/api/investments/${id}/moves`, { ...data, kind });
+        toast(kind === "valuation" ? "Valor actualizado" : kind === "contribution" ? "Aporte registrado" : "Retiro registrado");
+      },
+    });
+  }
+
   // ------------------------------------------------------------------ ajustes
   async function renderSettings() {
     content.innerHTML = `
@@ -921,6 +1087,14 @@
       } catch (err) { toast(err.message, true); }
     },
     "new-goal": () => openGoalForm(null),
+    "inv-new": () => openInvestmentForm(null),
+    "inv-edit": (id) => openInvestmentForm(state._inv.holdings.find((h) => h.id === Number(id))),
+    "inv-del": (id) => removeItem("¿Eliminar esta inversión y todo su historial?", `/api/investments/${id}`, "Inversión eliminada"),
+    "inv-value": (id) => openInvestmentMove(id, "valuation"),
+    "inv-add": (id) => openInvestmentMove(id, "contribution"),
+    "inv-sub": (id) => openInvestmentMove(id, "withdrawal"),
+    "inv-hist": (id) => { state._invOpen = state._invOpen === Number(id) ? null : Number(id); render(); },
+    "inv-move-del": (id) => removeItem("¿Eliminar este movimiento del historial?", `/api/investments/moves/${id}`, "Movimiento eliminado"),
     "edit-goal": (id) => openGoalForm(state._goals.find((g) => g.id === Number(id))),
     "del-goal": (id) => removeItem("¿Eliminar esta meta?", `/api/goals/${id}`, "Meta eliminada"),
     "add-goal": (id) => goalMove(id, 1),

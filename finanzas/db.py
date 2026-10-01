@@ -78,6 +78,28 @@ CREATE TABLE IF NOT EXISTS transactions (
 CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(date);
 CREATE INDEX IF NOT EXISTS idx_tx_card ON transactions(card_id);
 
+-- Inversiones: cada posición vive en una aplicación/plataforma y tiene un tipo de activo
+CREATE TABLE IF NOT EXISTS investments (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT    NOT NULL,
+    platform   TEXT    NOT NULL DEFAULT '',
+    asset_type TEXT    NOT NULL DEFAULT 'otro',
+    notes      TEXT    NOT NULL DEFAULT '',
+    created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+-- kind: contribution (aporte) | withdrawal (retiro) | valuation (valor actual)
+CREATE TABLE IF NOT EXISTS investment_moves (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    investment_id INTEGER NOT NULL REFERENCES investments(id) ON DELETE CASCADE,
+    date          TEXT    NOT NULL,
+    kind          TEXT    NOT NULL CHECK (kind IN ('contribution', 'withdrawal', 'valuation')),
+    amount        REAL    NOT NULL CHECK (amount >= 0),
+    notes         TEXT    NOT NULL DEFAULT '',
+    created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_inv_moves ON investment_moves(investment_id, date);
+
 CREATE TABLE IF NOT EXISTS goals (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     name     TEXT NOT NULL,
