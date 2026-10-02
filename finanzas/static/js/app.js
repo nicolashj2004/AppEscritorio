@@ -11,13 +11,14 @@
     cards: [],
     txFilters: { type: "", category_id: "", card_id: "", payment_method: "", q: "" },
     invDisplay: "COP",
+    flow: "all", // all | expense | income (selector fijo de la barra superior)
   };
   const charts = [];
 
   const VIEWS = {
     dashboard: { title: "Dashboard", render: renderDashboard },
     movimientos: { title: "Movimientos", render: renderTransactions },
-    tarjetas: { title: "Tarjetas de crédito", render: renderCards },
+    tarjetas: { title: "Tarjetas", render: renderCards },
     presupuesto: { title: "Categorías y presupuesto", render: renderBudget },
     fijos: { title: "Gastos e ingresos fijos", render: renderRecurring },
     metas: { title: "Metas de ahorro", render: renderGoals },
@@ -127,6 +128,15 @@
     render();
   }
 
+  const FLOW_VIEWS = ["movimientos", "presupuesto", "fijos"];
+  function updateFlowToggle() {
+    const el = $("#flowToggle");
+    el.style.display = FLOW_VIEWS.includes(state.view) ? "" : "none";
+    el.querySelectorAll("input").forEach((i) => (i.checked = i.value === state.flow));
+  }
+  const showExpense = () => state.flow !== "income";
+  const showIncome = () => state.flow !== "expense";
+
   function updateMonthNav() {
     const label = monthName(state.month);
     $("#monthLabel").textContent = label.charAt(0).toUpperCase() + label.slice(1);
@@ -142,6 +152,7 @@
     $("#viewTitle").textContent = VIEWS[view].title;
     document.title = `${VIEWS[view].title} · Mis Finanzas`;
     updateMonthNav();
+    updateFlowToggle();
     destroyCharts();
     try {
       await loadRefs();
@@ -152,6 +163,7 @@
   }
 
   function routeFromHash() {
+    if ($("#modal").open) $("#modal").close();
     state.view = (location.hash || "#dashboard").slice(1);
     $("#sidebar").classList.remove("open");
     render();
@@ -282,14 +294,25 @@
       .map((c) => ({ value: c.id, label: `${c.icon} ${c.name}`.trim() }));
     return withEmpty ? [{ value: "", label: "— Sin categoría —" }, ...opts] : opts;
   }
-  function cardOptions(includeId) {
+  function cardOptions(includeId, kind = "credit") {
     return state.cards
-      .filter((c) => c.active || c.id === includeId)
+      .filter((c) => c.kind === kind && (c.active || c.id === includeId))
       .map((c) => ({ value: c.id, label: `${c.name}${c.last4 ? ` •${c.last4}` : ""}` }));
   }
+  const creditCards = () => state.cards.filter((c) => c.kind === "credit");
+  const debitCards = () => state.cards.filter((c) => c.kind === "debit" && c.active);
+  // Tarjeta del movimiento: crédito para compras con tarjeta y pagos; débito opcional
+  function txCardOptions(v, includeId) {
+    if (v.type === "expense" && v.payment_method === "debit") {
+      return [{ value: "", label: "— Sin especificar —" }, ...cardOptions(includeId, "debit")];
+    }
+    return cardOptions(includeId, "credit");
+  }
+  const showTxCard = (v) => v.type === "card_payment" || (v.type === "expense" && v.payment_method === "card")
+    || (v.type === "expense" && v.payment_method === "debit" && debitCards().length > 0);
 
   function openTransactionForm(tx, preset = {}) {
-    if (!tx && state.cards.length === 0 && preset.type === "card_payment") {
+    if (!tx && creditCards().length === 0 && preset.type === "card_payment") {
       toast("Primero registra una tarjeta", true);
       return;
     }
@@ -319,8 +342,7 @@
             .filter(([k]) => v.type === "expense" || k !== "card")
             .map(([value, label]) => ({ value, label })) },
         { name: "card_id", label: "Tarjeta", type: "select",
-          options: () => cardOptions(tx && tx.card_id),
-          showIf: (v) => v.type === "card_payment" || (v.type === "expense" && v.payment_method === "card") },
+          options: (v) => txCardOptions(v, tx && tx.card_id), showIf: showTxCard },
         { name: "installments", label: "Número de cuotas", type: "number", min: 1, step: 1,
           showIf: (v) => v.type === "expense" && v.payment_method === "card" },
         { name: "notes", label: "Notas", type: "textarea", full: true },
@@ -338,20 +360,28 @@
     });
   }
 
-  function openCardForm(card) {
+  function openCardForm(card, kind = "credit") {
+    const credit = (v) => v.kind === "credit";
     openForm({
-      title: card ? "Editar tarjeta" : "Nueva tarjeta de crédito",
-      values: card ? { ...card, active: !!card.active } : { color: "#2a78d6", active: true, initial_balance: 0 },
+      title: card ? "Editar tarjeta" : "Nueva tarjeta",
+      values: card ? { ...card, active: !!card.active, due_next_month: card.due_next_month ? "1" : "0" }
+        : { kind, color: kind === "debit" ? "#1baf7a" : "#2a78d6", active: true, initial_balance: 0, due_next_month: "1" },
       fields: [
+        { name: "kind", label: "Tipo de tarjeta", type: "seg", full: true,
+          options: [{ value: "credit", label: "💳 Crédito" }, { value: "debit", label: "🏧 Débito" }],
+          hint: (v) => (v.kind === "debit" ? "Una tarjeta débito descuenta de tu cuenta: no tiene cupo, corte ni pago" : "") },
         { name: "name", label: "Nombre", type: "text", placeholder: "Ej: Visa Oro" },
         { name: "bank", label: "Banco / franquicia", type: "text", placeholder: "Ej: Bancolombia" },
-        { name: "credit_limit", label: "Cupo total", type: "number", step: "any", min: 0 },
+        { name: "credit_limit", label: "Cupo total", type: "number", step: "any", min: 0, showIf: credit },
         { name: "initial_balance", label: "Deuda actual al registrarla", type: "number", step: "any", min: 0,
-          hint: "Lo que ya debías antes de empezar a usar la app" },
-        { name: "cut_day", label: "Día de corte", type: "number", min: 1, step: 1 },
-        { name: "due_day", label: "Día límite de pago", type: "number", min: 1, step: 1 },
+          hint: "Lo que ya debías antes de empezar a usar la app", showIf: credit },
+        { name: "cut_day", label: "Día de corte", type: "number", min: 1, step: 1, showIf: credit },
+        { name: "due_day", label: "Día límite de pago", type: "number", min: 1, step: 1, showIf: credit },
+        { name: "due_next_month", label: "El pago de cada corte se hace", type: "select", full: true, showIf: credit,
+          options: [{ value: "1", label: "El mes siguiente al corte (p. ej. corte 10 oct → pago en nov)" },
+            { value: "0", label: "El mismo mes del corte (p. ej. corte 10 oct → pago en oct)" }] },
         { name: "last4", label: "Últimos 4 dígitos", type: "text", placeholder: "1234" },
-        { name: "interest_rate", label: "Tasa de interés mensual (%)", type: "number", step: "any", min: 0 },
+        { name: "interest_rate", label: "Tasa de interés mensual (%)", type: "number", step: "any", min: 0, showIf: credit },
         { name: "color", label: "Color", type: "color" },
         { name: "active", label: "Tarjeta activa", type: "checkbox" },
       ],
@@ -389,7 +419,8 @@
   function openRecurringForm(rec) {
     openForm({
       title: rec ? "Editar fijo" : "Nuevo gasto/ingreso fijo",
-      values: rec ? { ...rec, active: !!rec.active } : { type: "expense", day: 1, payment_method: "debit", active: true },
+      values: rec ? { ...rec, active: !!rec.active }
+        : { type: state.flow === "income" ? "income" : "expense", day: 1, payment_method: state.flow === "income" ? "transfer" : "debit", active: true },
       fields: [
         { name: "type", label: "Tipo", type: "seg", full: true,
           options: [{ value: "expense", label: "Gasto" }, { value: "income", label: "Ingreso" }] },
@@ -402,8 +433,8 @@
           options: (v) => Object.entries(METHODS)
             .filter(([k]) => v.type === "expense" || k !== "card")
             .map(([value, label]) => ({ value, label })) },
-        { name: "card_id", label: "Tarjeta", type: "select", options: () => cardOptions(rec && rec.card_id),
-          showIf: (v) => v.type === "expense" && v.payment_method === "card" },
+        { name: "card_id", label: "Tarjeta", type: "select", options: (v) => txCardOptions(v, rec && rec.card_id),
+          showIf: (v) => v.type === "expense" && (v.payment_method === "card" || (v.payment_method === "debit" && debitCards().length > 0)) },
         { name: "active", label: "Activo", type: "checkbox" },
       ],
       onSubmit: async (data) => {
@@ -605,31 +636,37 @@
   // ------------------------------------------------------------- movimientos
   async function renderTransactions() {
     const f = state.txFilters;
+    const flow = state.flow;
     const qs = new URLSearchParams({ month: state.month });
-    Object.entries(f).forEach(([k, v]) => { if (v) qs.set(k, v); });
+    Object.entries(f).forEach(([k, v]) => { if (v && k !== "type") qs.set(k, v); });
+    const typeParam = f.type || (flow === "expense" ? "expense,card_payment" : flow === "income" ? "income" : "");
+    if (typeParam) qs.set("type", typeParam);
     const list = await api("GET", `/api/transactions?${qs}`);
+    const typeOpts = flow === "expense"
+      ? [{ value: "", label: "Gastos y pagos a tarjeta" }, { value: "expense", label: "Solo gastos" }, { value: "card_payment", label: "Solo pagos a tarjeta" }]
+      : [{ value: "", label: "Todos los tipos" }, ...Object.entries(TX_TYPES).map(([value, label]) => ({ value, label }))];
 
     const sum = (type) => list.filter((t) => t.type === type).reduce((s, t) => s + t.amount, 0);
     const catOpts = [{ value: "", label: "Todas las categorías" }, { value: "none", label: "Sin categoría" },
-      ...state.categories.map((c) => ({ value: c.id, label: `${c.icon} ${c.name}` }))];
+      ...state.categories.filter((c) => flow === "all" || c.type === flow).map((c) => ({ value: c.id, label: `${c.icon} ${c.name}` }))];
     const opt = (arr, sel) => arr.map((o) => `<option value="${esc(o.value)}"${String(o.value) === String(sel) ? " selected" : ""}>${esc(o.label)}</option>`).join("");
 
     content.innerHTML = `
       <div class="toolbar">
         <input type="search" id="fq" placeholder="Buscar..." value="${esc(f.q)}">
-        <select id="ftype">${opt([{ value: "", label: "Todos los tipos" }, ...Object.entries(TX_TYPES).map(([value, label]) => ({ value, label }))], f.type)}</select>
+        ${flow === "income" ? "" : `<select id="ftype">${opt(typeOpts, f.type)}</select>`}
         <select id="fcat">${opt(catOpts, f.category_id)}</select>
-        <select id="fcard">${opt([{ value: "", label: "Todas las tarjetas" }, ...state.cards.map((c) => ({ value: c.id, label: c.name }))], f.card_id)}</select>
+        ${flow === "income" ? "" : `<select id="fcard">${opt([{ value: "", label: "Todas las tarjetas" }, ...state.cards.map((c) => ({ value: c.id, label: c.name }))], f.card_id)}</select>`}
         <select id="fmethod">${opt([{ value: "", label: "Todos los medios" }, ...Object.entries(METHODS).map(([value, label]) => ({ value, label }))], f.payment_method)}</select>
         <span class="grow"></span>
         <a class="btn" href="/api/transactions/export.csv?${qs}" download>⬇ Exportar CSV</a>
-        <button class="btn btn-primary" data-act="new-tx">+ Movimiento</button>
+        <button class="btn btn-primary" data-act="new-tx">${flow === "income" ? "+ Ingreso" : flow === "expense" ? "+ Gasto" : "+ Movimiento"}</button>
       </div>
       <div class="summary-strip">
         <span>${list.length} movimiento(s)</span>
-        <span>Ingresos: <b class="num">${money(sum("income"))}</b></span>
-        <span>Gastos: <b class="num">${money(sum("expense"))}</b></span>
-        <span>Pagos a tarjetas: <b class="num">${money(sum("card_payment"))}</b></span>
+        ${showIncome() ? `<span>Ingresos: <b class="num pos">${money(sum("income"))}</b></span>` : ""}
+        ${showExpense() ? `<span>Gastos: <b class="num">${money(sum("expense"))}</b></span>
+        <span>Pagos a tarjetas: <b class="num">${money(sum("card_payment"))}</b></span>` : ""}
       </div>
       <div class="panel" style="padding:0">
         ${list.length ? `<div class="table-wrap"><table>
@@ -640,7 +677,7 @@
             <td>${esc(t.description) || '<span class="muted">—</span>'}${t.notes ? `<div class="muted" style="font-size:12px">${esc(t.notes)}</div>` : ""}</td>
             <td>${t.category_name ? `<span class="tag"><span class="dot" style="background:${esc(t.category_color)}"></span>${esc(t.category_icon)} ${esc(t.category_name)}</span>` : '<span class="muted">—</span>'}</td>
             <td><span class="pill ${t.type}">${TX_TYPES[t.type]}</span></td>
-            <td>${esc(METHODS[t.payment_method] || t.payment_method)}${t.card_name ? `<div class="muted" style="font-size:12px">💳 ${esc(t.card_name)}${t.installments > 1 ? ` · ${t.installments} cuotas` : ""}</div>` : ""}</td>
+            <td>${esc(METHODS[t.payment_method] || t.payment_method)}${t.card_name ? `<div class="muted" style="font-size:12px">${t.card_kind === "debit" ? "🏧" : "💳"} ${esc(t.card_name)}${t.installments > 1 ? ` · ${t.installments} cuotas` : ""}</div>` : ""}</td>
             <td class="right num"><b class="${t.type === "income" ? "pos" : ""}">${t.type === "income" ? "+" : t.type === "expense" ? "−" : ""}${money(t.amount)}</b></td>
             <td class="row-actions">
               <button class="icon-btn small" data-act="edit-tx" data-id="${t.id}" title="Editar">✏️</button>
@@ -652,7 +689,9 @@
 
     state._txList = list;
     const bind = (id, key) => $(id).addEventListener("change", (e) => { f[key] = e.target.value; render(); });
-    bind("#ftype", "type"); bind("#fcat", "category_id"); bind("#fcard", "card_id"); bind("#fmethod", "payment_method");
+    if ($("#ftype")) bind("#ftype", "type");
+    if ($("#fcard")) bind("#fcard", "card_id");
+    bind("#fcat", "category_id"); bind("#fmethod", "payment_method");
     let timer;
     $("#fq").addEventListener("input", (e) => {
       clearTimeout(timer);
@@ -667,17 +706,20 @@
 
   // ---------------------------------------------------------------- tarjetas
   async function renderCards() {
-    const cards = state.cards;
-    content.innerHTML = `
-      <div class="toolbar"><span class="grow muted">Saldos calculados al cierre de ${esc(monthName(state.month))}. Las compras con tarjeta suman a la deuda y los pagos la reducen.</span>
-        <button class="btn btn-primary" data-act="new-card">+ Nueva tarjeta</button></div>
-      ${cards.length ? `<div class="cards-grid">${cards.map((c) => `
-        <div class="panel cc${c.active ? "" : " inactive"}">
+    const credit = state.cards.filter((c) => c.kind === "credit");
+    const debit = state.cards.filter((c) => c.kind === "debit");
+    const face = (c, kindLabel) => `
           <div class="cc-face" style="--cc:${esc(c.color)}">
             <div class="cc-top"><div><div class="cc-name">${esc(c.name)}</div><div class="cc-bank">${esc(c.bank)}</div></div>
-              <div>${c.active ? "" : "Inactiva"}</div></div>
+              <div class="cc-kind">${kindLabel}${c.active ? "" : " · Inactiva"}</div></div>
             <div class="cc-num">•••• •••• •••• ${esc(c.last4 || "••••")}</div>
-          </div>
+          </div>`;
+    const editButtons = (c) => `<span class="grow" style="flex:1"></span>
+              <button class="icon-btn small" data-act="edit-card" data-id="${c.id}" title="Editar">✏️</button>
+              <button class="icon-btn small" data-act="del-card" data-id="${c.id}" title="Eliminar">🗑️</button>`;
+
+    const creditHtml = credit.map((c) => `
+        <div class="panel cc${c.active ? "" : " inactive"}">${face(c, "Crédito")}
           <div class="cc-body">
             <div class="bar-top" style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:13px">
               <span>Uso del cupo</span><b class="${utilClass(c.utilization) === "bad" ? "neg" : ""}">${pct(c.utilization)}</b></div>
@@ -690,19 +732,45 @@
               <div><span>Pagos del mes</span><b class="num">${money(c.month_paid)}</b></div>
               <div><span>Interés mensual</span><b>${c.interest_rate ? pct(c.interest_rate) : "—"}</b></div>
             </div>
-            <div class="cc-meta"><span>✂️ Corte: ${c.cut_date ? fmtDate(c.cut_date) : "—"}</span><span>📅 Pago: ${c.due_date ? fmtDate(c.due_date) : "—"}</span></div>
+            <div class="cc-meta"><span>✂️ Corte: ${c.cut_date ? fmtDate(c.cut_date) : "—"}</span>
+              <span title="Fecha límite para pagar el corte de ${esc(monthName(state.month))}">📅 Pago: ${c.due_date ? fmtDate(c.due_date) : "—"}</span></div>
             <div class="cc-actions">
               <button class="btn btn-sm btn-primary" data-act="pay-card" data-id="${c.id}">Registrar pago</button>
               <button class="btn btn-sm" data-act="buy-card" data-id="${c.id}">Registrar compra</button>
               <button class="btn btn-sm btn-ghost" data-act="card-tx" data-id="${c.id}">Movimientos</button>
-              <span class="grow" style="flex:1"></span>
-              <button class="icon-btn small" data-act="edit-card" data-id="${c.id}" title="Editar">✏️</button>
-              <button class="icon-btn small" data-act="del-card" data-id="${c.id}" title="Eliminar">🗑️</button>
+              ${editButtons(c)}
             </div>
           </div>
-        </div>`).join("")}</div>`
-      : `<div class="panel empty"><div class="big">💳</div><p>Registra tus tarjetas de crédito para controlar su cupo, deuda y fechas de pago.</p>
-         <button class="btn btn-primary" data-act="new-card">+ Agregar tarjeta</button></div>`}`;
+        </div>`).join("");
+
+    const debitHtml = debit.map((c) => `
+        <div class="panel cc${c.active ? "" : " inactive"}">${face(c, "Débito")}
+          <div class="cc-body">
+            <div class="cc-stats" style="grid-template-columns:1fr">
+              <div><span>Gastos del mes con esta tarjeta</span><b class="num">${money(c.month_spent)}</b></div>
+            </div>
+            <div class="cc-actions">
+              <button class="btn btn-sm btn-primary" data-act="buy-debit" data-id="${c.id}">Registrar compra</button>
+              <button class="btn btn-sm btn-ghost" data-act="card-tx" data-id="${c.id}">Movimientos</button>
+              ${editButtons(c)}
+            </div>
+          </div>
+        </div>`).join("");
+
+    content.innerHTML = `
+      <div class="toolbar"><span class="grow muted">Saldos calculados al cierre de ${esc(monthName(state.month))}.</span>
+        <button class="btn" data-act="new-card" data-type="debit">+ Tarjeta débito</button>
+        <button class="btn btn-primary" data-act="new-card" data-type="credit">+ Tarjeta de crédito</button></div>
+      <h2 class="section-title">💳 Tarjetas de crédito</h2>
+      <p class="muted section-sub">Las compras suman a la deuda y los pagos la reducen. La fecha de pago es la del corte de este mes.</p>
+      ${credit.length ? `<div class="cards-grid mb">${creditHtml}</div>`
+        : `<div class="panel empty mb"><p>Registra tus tarjetas de crédito para controlar su cupo, deuda y fechas de pago.</p>
+           <button class="btn btn-primary" data-act="new-card" data-type="credit">+ Tarjeta de crédito</button></div>`}
+      <h2 class="section-title">🏧 Tarjetas débito</h2>
+      <p class="muted section-sub">Al registrar un gasto con medio de pago "Débito" puedes elegir con cuál tarjeta lo pagaste.</p>
+      ${debit.length ? `<div class="cards-grid">${debitHtml}</div>`
+        : `<div class="panel empty"><p>Agrega tus tarjetas débito para saber cuánto gastas con cada una.</p>
+           <button class="btn" data-act="new-card" data-type="debit">+ Tarjeta débito</button></div>`}`;
   }
 
   // ------------------------------------------------------ categorías y presupuesto
@@ -730,14 +798,14 @@
 
     content.innerHTML = `
       <div class="kpis">
-        <div class="panel kpi"><div class="label">Presupuesto de ${esc(monthName(state.month))}</div><div class="value num">${money(totalBudget)}</div></div>
+        ${showExpense() ? `<div class="panel kpi"><div class="label">Presupuesto de ${esc(monthName(state.month))}</div><div class="value num">${money(totalBudget)}</div></div>
         <div class="panel kpi"><div class="label">Gastado</div><div class="value num">${money(totalSpent)}</div>
           <div class="delta">${totalBudget ? pct(totalSpent / totalBudget * 100) + " del presupuesto" : ""}</div></div>
-        <div class="panel kpi"><div class="label">Disponible</div><div class="value num ${totalBudget - totalSpent < 0 ? "neg" : ""}">${money(totalBudget - totalSpent)}</div></div>
-        <div class="panel kpi"><div class="label">Ingresos del mes</div><div class="value num">${money(totalIncome)}</div>
-          <div class="delta">${totalIncome ? `Presupuesto = ${pct(totalBudget / totalIncome * 100)} de tus ingresos` : ""}</div></div>
+        <div class="panel kpi"><div class="label">Disponible</div><div class="value num ${totalBudget - totalSpent < 0 ? "neg" : ""}">${money(totalBudget - totalSpent)}</div></div>` : ""}
+        ${showIncome() ? `<div class="panel kpi"><div class="label">Ingresos del mes</div><div class="value num">${money(totalIncome)}</div>
+          <div class="delta">${totalIncome ? `Presupuesto = ${pct(totalBudget / totalIncome * 100)} de tus ingresos` : ""}</div></div>` : ""}
       </div>
-      <div class="panel mb">
+      ${showExpense() ? `<div class="panel mb">
         <div class="panel-head"><div><h3>Categorías de gasto</h3>
           <p class="sub">Escribe el presupuesto de ${esc(monthName(state.month))}. Se guarda solo para este mes; deja vacío para usar el valor por defecto.</p></div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -746,8 +814,8 @@
         <div class="table-wrap"><table>
           <thead><tr><th>Categoría</th><th class="right">Presupuesto</th><th class="right">Gastado</th><th class="right">Restante</th><th>Progreso</th><th></th></tr></thead>
           <tbody>${rowsExp || '<tr><td colspan="6" class="empty">Sin categorías</td></tr>'}</tbody></table></div>
-      </div>
-      <div class="panel">
+      </div>` : ""}
+      ${showIncome() ? `<div class="panel">
         <div class="panel-head"><div><h3>Categorías de ingreso</h3><p class="sub">Fuentes de ingreso</p></div>
           <button class="btn btn-sm btn-primary" data-act="new-cat" data-type="income">+ Categoría</button></div>
         <div class="table-wrap"><table><thead><tr><th>Categoría</th><th class="right">Recibido este mes</th><th></th></tr></thead>
@@ -756,7 +824,7 @@
           <td class="right num">${money(c.spent)}</td>
           <td class="row-actions"><button class="icon-btn small" data-act="edit-cat" data-id="${c.id}">✏️</button>
           <button class="icon-btn small" data-act="del-cat" data-id="${c.id}">🗑️</button></td></tr>`).join("")}</tbody></table></div>
-      </div>`;
+      </div>` : ""}`;
 
     content.querySelectorAll("[data-budget]").forEach((input) => {
       input.addEventListener("change", async () => {
@@ -771,14 +839,15 @@
 
   // ------------------------------------------------------------- gastos fijos
   async function renderRecurring() {
-    const list = await api("GET", `/api/recurring?month=${state.month}`);
+    const list = (await api("GET", `/api/recurring?month=${state.month}`))
+      .filter((r) => state.flow === "all" || r.type === state.flow);
     const pending = list.filter((r) => r.active && !r.registered);
     const totalExp = list.filter((r) => r.active && r.type === "expense").reduce((s, r) => s + r.amount, 0);
     const totalInc = list.filter((r) => r.active && r.type === "income").reduce((s, r) => s + r.amount, 0);
     content.innerHTML = `
       <div class="kpis">
-        <div class="panel kpi"><div class="label">Gastos fijos mensuales</div><div class="value num">${money(totalExp)}</div></div>
-        <div class="panel kpi"><div class="label">Ingresos fijos mensuales</div><div class="value num">${money(totalInc)}</div></div>
+        ${showExpense() ? `<div class="panel kpi"><div class="label">Gastos fijos mensuales</div><div class="value num">${money(totalExp)}</div></div>` : ""}
+        ${showIncome() ? `<div class="panel kpi"><div class="label">Ingresos fijos mensuales</div><div class="value num">${money(totalInc)}</div></div>` : ""}
         <div class="panel kpi"><div class="label">Pendientes en ${esc(monthName(state.month))}</div><div class="value num">${pending.length}</div></div>
       </div>
       <div class="toolbar"><span class="grow muted">Define tus gastos e ingresos que se repiten cada mes (arriendo, servicios, salario...) y regístralos uno por uno (puedes ajustar el monto) o todos a la vez.</span>
@@ -1085,10 +1154,10 @@
   }
 
   const ACTIONS = {
-    "new-tx": () => openTransactionForm(null),
+    "new-tx": () => openTransactionForm(null, state.flow === "income" ? { type: "income", payment_method: "transfer" } : {}),
     "edit-tx": (id) => openTransactionForm(state._txList.find((t) => t.id === Number(id))),
     "del-tx": (id) => removeItem("¿Eliminar este movimiento?", `/api/transactions/${id}`, "Movimiento eliminado"),
-    "new-card": () => openCardForm(null),
+    "new-card": (_id, el) => openCardForm(null, el.dataset.type || "credit"),
     "edit-card": (id) => openCardForm(findCard(id)),
     "del-card": (id) => removeItem("¿Eliminar esta tarjeta? Sus movimientos se conservarán pero quedarán sin tarjeta asociada.",
       `/api/cards/${id}`, "Tarjeta eliminada"),
@@ -1098,6 +1167,7 @@
         amount: c.balance > 0 ? c.balance : "", description: `Pago ${c.name}` });
     },
     "buy-card": (id) => openTransactionForm(null, { type: "expense", payment_method: "card", card_id: Number(id) }),
+    "buy-debit": (id) => openTransactionForm(null, { type: "expense", payment_method: "debit", card_id: Number(id) }),
     "card-tx": (id) => {
       Object.assign(state.txFilters, { type: "", category_id: "", card_id: String(id), payment_method: "", q: "" });
       location.hash = "#movimientos";
@@ -1125,7 +1195,8 @@
     },
     "gen-recurring": async () => {
       try {
-        const r = await api("POST", "/api/recurring/generate", { month: state.month });
+        const r = await api("POST", "/api/recurring/generate",
+          { month: state.month, type: state.flow === "all" ? "" : state.flow });
         toast(`${r.created} movimiento(s) registrado(s)`);
         render();
       } catch (err) { toast(err.message, true); }
@@ -1204,7 +1275,14 @@
   $("#nextMonth").addEventListener("click", () => setMonth(shiftMonth(state.month, 1)));
   $("#todayBtn").addEventListener("click", () => setMonth(currentMonth()));
   $("#monthInput").addEventListener("change", (e) => { if (e.target.value) setMonth(e.target.value); });
-  $("#quickAdd").addEventListener("click", () => openTransactionForm(null));
+  $("#quickAdd").addEventListener("click", () =>
+    openTransactionForm(null, state.flow === "income" ? { type: "income", payment_method: "transfer" } : {}));
+  $("#flowToggle").addEventListener("change", (e) => {
+    state.flow = e.target.value;
+    storageSet("finanzas.flow", state.flow);
+    Object.assign(state.txFilters, { type: "", category_id: "" });
+    render();
+  });
   $("#menuBtn").addEventListener("click", () => $("#sidebar").classList.toggle("open"));
   $("#modalClose").addEventListener("click", () => $("#modal").close());
   $("#modalCancel").addEventListener("click", () => $("#modal").close());
@@ -1221,6 +1299,7 @@
 
   applyTheme(storageGet("finanzas.theme"));
   if (storageGet("finanzas.invDisplay") === "USD") state.invDisplay = "USD";
+  if (["expense", "income"].includes(storageGet("finanzas.flow"))) state.flow = storageGet("finanzas.flow");
   api("GET", "/api/settings")
     .then((s) => { state.settings = s; })
     .catch(() => {})

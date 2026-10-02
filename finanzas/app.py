@@ -154,6 +154,26 @@ def ensure_exists(conn, table, row_id):
 # ------------------------------------------------------------ lógica de negocio
 
 
+def due_in_next_month(card):
+    """Si la fecha límite de pago cae en el mes siguiente al corte.
+
+    Por defecto sí (corte el 10 de octubre → pago en noviembre). Si el día de pago
+    es anterior o igual al de corte, siempre es el mes siguiente.
+    """
+    if card.get("cut_day") and card.get("due_day") and card["due_day"] <= card["cut_day"]:
+        return True
+    return True if card.get("due_next_month") is None else bool(card["due_next_month"])
+
+
+def card_dates(card, month):
+    """(fecha de corte en `month`, fecha límite de pago de ese corte)."""
+    cut = day_in_month(month, card["cut_day"]) if card.get("cut_day") else None
+    if not card.get("due_day"):
+        return cut, None
+    due_month = shift_month(month, 1) if due_in_next_month(card) else month
+    return cut, day_in_month(due_month, card["due_day"])
+
+
 def card_summaries(conn, month):
     """Estado de cada tarjeta al cierre de `month`."""
     end = next_month_start(month)
@@ -179,8 +199,10 @@ def card_summaries(conn, month):
         )
         c["month_spent"] = agg[2]
         c["month_paid"] = agg[3]
-        c["cut_date"] = day_in_month(month, c["cut_day"]) if c["cut_day"] else None
-        c["due_date"] = day_in_month(month, c["due_day"]) if c["due_day"] else None
+        c["due_next_month"] = due_in_next_month(c)
+        c["cut_date"], c["due_date"] = card_dates(c, month)
+        if c["kind"] == "debit":  # sin cupo ni deuda: solo se resumen sus gastos
+            c.update(balance=0, available=0, utilization=0, month_paid=0)
     return cards
 
 
@@ -319,7 +341,7 @@ def build_dashboard(conn, month):
         )
     )
 
-    cards = [c for c in card_summaries(conn, month) if c["active"]]
+    cards = [c for c in card_summaries(conn, month) if c["active"] and c["kind"] == "credit"]
     card_totals = {
         "limit": sum(c["credit_limit"] for c in cards),
         "balance": sum(c["balance"] for c in cards),
@@ -353,13 +375,16 @@ def build_dashboard(conn, month):
         if c["utilization"] >= 70:
             alerts.append({"level": "danger" if c["utilization"] >= 90 else "warning",
                            "text": f"💳 {c['name']}: uso del cupo al {c['utilization']:.0f}%"})
-        if c["due_date"] and c["balance"] > 0 and month == current_month() \
-                and c["due_date"] >= today:
-            days = (date.fromisoformat(c["due_date"]) - date.today()).days
-            if days <= 7:
-                alerts.append({"level": "info",
-                               "text": f"📅 {c['name']}: fecha límite de pago en {days} día(s) "
-                                       f"({c['due_date']})"})
+        if c["balance"] > 0 and month == current_month():
+            # El pago próximo puede ser del corte de este mes o del anterior
+            dues = sorted(d for _, d in (card_dates(c, shift_month(month, -1)),
+                                         card_dates(c, month)) if d and d >= today)
+            if dues:
+                days = (date.fromisoformat(dues[0]) - date.today()).days
+                if days <= 7:
+                    alerts.append({"level": "info",
+                                   "text": f"📅 {c['name']}: fecha límite de pago en {days} "
+                                           f"día(s) ({dues[0]})"})
     pending = pending_recurring(conn, month)
     if pending:
         alerts.append({"level": "info",
@@ -449,18 +474,24 @@ def create_app(db_path=None):
     # ---------------------------------------------------------- tarjetas
 
     def card_payload(data):
-        return (
-            req_str(data, "name"),
-            req_str(data, "bank", required=False),
-            req_str(data, "last4", required=False)[-4:],
-            req_num(data, "credit_limit", minimum=0),
-            req_num(data, "initial_balance", required=False, minimum=0),
-            opt_day(data, "cut_day"),
-            opt_day(data, "due_day"),
-            req_num(data, "interest_rate", required=False, minimum=0),
-            req_str(data, "color", required=False) or "#4f46e5",
-            1 if data.get("active", True) else 0,
-        )
+        kind = req_str(data, "kind", required=False) or "credit"
+        if kind not in ("credit", "debit"):
+            raise ApiError("Tipo de tarjeta inválido")
+        common = (req_str(data, "name"), req_str(data, "bank", required=False),
+                  req_str(data, "last4", required=False)[-4:])
+        tail = (req_str(data, "color", required=False) or "#4f46e5",
+                1 if data.get("active", True) else 0, kind)
+        if kind == "debit":  # una tarjeta débito no tiene cupo, corte ni pago
+            return (*common, 0, 0, None, None, 0, *tail, None)
+        due_next = data.get("due_next_month")
+        due_next = None if due_next in (None, "") else int(str(due_next).lower() in ("1", "true"))
+        return (*common,
+                req_num(data, "credit_limit", minimum=0),
+                req_num(data, "initial_balance", required=False, minimum=0),
+                opt_day(data, "cut_day"),
+                opt_day(data, "due_day"),
+                req_num(data, "interest_rate", required=False, minimum=0),
+                *tail, due_next)
 
     @app.get("/api/cards")
     def list_cards():
@@ -471,8 +502,8 @@ def create_app(db_path=None):
         c = conn()
         cur = c.execute(
             """INSERT INTO cards (name, bank, last4, credit_limit, initial_balance,
-                   cut_day, due_day, interest_rate, color, active)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   cut_day, due_day, interest_rate, color, active, kind, due_next_month)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             card_payload(body()),
         )
         c.commit()
@@ -485,7 +516,7 @@ def create_app(db_path=None):
         c.execute(
             """UPDATE cards SET name = ?, bank = ?, last4 = ?, credit_limit = ?,
                    initial_balance = ?, cut_day = ?, due_day = ?, interest_rate = ?,
-                   color = ?, active = ?
+                   color = ?, active = ?, kind = ?, due_next_month = ?
                WHERE id = ?""",
             (*card_payload(body()), card_id),
         )
@@ -622,16 +653,18 @@ def create_app(db_path=None):
                 raise ApiError("Selecciona la tarjeta a la que abonas")
             if method == "card":
                 method = "transfer"
+            require_card(c, card_id, "credit")
         elif ttype == "expense" and method == "card":
             if card_id is None:
                 raise ApiError("Selecciona la tarjeta con la que pagaste")
+            require_card(c, card_id, "credit")
+        elif ttype == "expense" and method == "debit" and card_id is not None:
+            require_card(c, card_id, "debit")
         else:
             card_id = None
             if ttype == "income" and method == "card":
                 method = "transfer"
 
-        if card_id is not None:
-            ensure_exists(c, "cards", card_id)
         if category_id is not None:
             row = c.execute("SELECT type FROM categories WHERE id = ?", (category_id,)).fetchone()
             if not row:
@@ -649,9 +682,18 @@ def create_app(db_path=None):
                 category_id, method, card_id, installments,
                 req_str(data, "notes", required=False), period)
 
+    def require_card(c, card_id, kind):
+        row = c.execute("SELECT kind FROM cards WHERE id = ?", (card_id,)).fetchone()
+        if not row:
+            raise ApiError("Registro no encontrado", 404)
+        if row["kind"] != kind:
+            raise ApiError("Esa tarjeta es de crédito" if row["kind"] == "credit"
+                           else "Esa tarjeta es débito")
+
     TX_SELECT = """
         SELECT t.*, c.name AS category_name, c.icon AS category_icon,
-               c.color AS category_color, k.name AS card_name, k.color AS card_color
+               c.color AS category_color, k.name AS card_name, k.color AS card_color,
+               k.kind AS card_kind
         FROM transactions t
         LEFT JOIN categories c ON c.id = t.category_id
         LEFT JOIN cards k ON k.id = t.card_id
@@ -660,9 +702,10 @@ def create_app(db_path=None):
     def query_transactions(month):
         where = ["t.period = ?"]
         params = [month]
-        if request.args.get("type") in TX_TYPES:
-            where.append("t.type = ?")
-            params.append(request.args["type"])
+        types = [t for t in (request.args.get("type") or "").split(",") if t in TX_TYPES]
+        if types:
+            where.append(f"t.type IN ({','.join('?' * len(types))})")
+            params += types
         if request.args.get("category_id"):
             if request.args["category_id"] == "none":
                 where.append("t.category_id IS NULL")
@@ -760,13 +803,14 @@ def create_app(db_path=None):
         method = req_str(data, "payment_method", required=False) or "cash"
         if method not in PAYMENT_METHODS:
             raise ApiError("Medio de pago inválido")
-        card_id = opt_id(data, "card_id") if method == "card" and rtype == "expense" else None
+        card_id = (opt_id(data, "card_id")
+                   if method in ("card", "debit") and rtype == "expense" else None)
         if method == "card" and card_id is None:
             if rtype == "expense":
                 raise ApiError("Selecciona la tarjeta")
             method = "transfer"
         if card_id is not None:
-            ensure_exists(c, "cards", card_id)
+            require_card(c, card_id, "credit" if method == "card" else "debit")
         category_id = opt_id(data, "category_id")
         if category_id is not None:
             ensure_exists(c, "categories", category_id)
@@ -832,6 +876,8 @@ def create_app(db_path=None):
             raise ApiError("Mes inválido")
         c = conn()
         pending = pending_recurring(c, month)
+        if data.get("type") in ("expense", "income"):
+            pending = [r for r in pending if r["type"] == data["type"]]
         for r in pending:
             c.execute(
                 """INSERT INTO transactions (date, description, amount, type, category_id,

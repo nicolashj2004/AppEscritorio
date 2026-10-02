@@ -28,6 +28,11 @@
       <header class="topbar">
         <button class="icon-btn menu-btn" id="menuBtn" aria-label="Menú">☰</button>
         <h1 id="viewTitle">Dashboard</h1>
+        <div class="seg flow-toggle" id="flowToggle" role="group" aria-label="Ver gastos o ingresos">
+          <label><input type="radio" name="flow" value="all">Todo</label>
+          <label><input type="radio" name="flow" value="expense">💸 Gastos</label>
+          <label><input type="radio" name="flow" value="income">💰 Ingresos</label>
+        </div>
         <div class="month-nav" id="monthNav">
           <button class="icon-btn" id="prevMonth" aria-label="Mes anterior">‹</button>
           <label class="month-label">

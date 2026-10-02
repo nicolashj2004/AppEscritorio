@@ -17,10 +17,14 @@ el comportamiento. Los datos se guardan en una base de datos SQLite **en tu equi
   cambiarlo (p. ej. el salario pagado el 30 de septiembre cuenta para octubre). En *Ajustes*
   puedes indicar que los ingresos recibidos desde cierto día pasen automáticamente al mes siguiente.
 - **Navegación entre meses** con las flechas, el selector de mes o el teclado (← / →, T = hoy).
-- **Tarjetas de crédito**: cupo total, deuda, disponible y % de uso calculados al cierre de
-  cada mes; días de corte y de pago; compras en cuotas; registro de pagos (los pagos a la
+- **Tarjetas de crédito y débito**: en las de crédito, cupo total, deuda, disponible y % de uso
+  calculados al cierre de cada mes; días de corte y de pago (el pago puede caer el mes siguiente
+  al corte); compras en cuotas; registro de pagos (los pagos a la
   tarjeta reducen la deuda y **no** cuentan en el total de gastos, para no contar doble; si les
   asignas una categoría, suman al gasto y presupuesto de esa categoría).
+  Las tarjetas débito registran con cuál pagaste cada gasto y cuánto gastas con cada una.
+- **Selector Todo / Gastos / Ingresos** fijo en la barra superior para Movimientos, Categorías
+  y Gastos fijos.
 - **Movimientos**: gastos, ingresos y pagos a tarjeta con categoría, medio de pago, notas;
   filtros, búsqueda y exportación a CSV (se abre en Excel).
 - **Categorías y presupuesto**: crea tus propias categorías; presupuesto por defecto o
