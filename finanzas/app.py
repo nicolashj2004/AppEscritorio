@@ -1114,7 +1114,19 @@ def create_app(db_path=None):
 
     @app.get("/api/info")
     def info():
-        return jsonify({"db_path": os.path.abspath(app.config["DB_PATH"])})
+        return jsonify({"db_path": os.path.abspath(app.config["DB_PATH"]),
+                        "can_shutdown": callable(app.config.get("SHUTDOWN"))})
+
+    @app.post("/api/shutdown")
+    def shutdown():
+        """Cierra la aplicación (lo configura run.py; en pruebas no existe)."""
+        stop = app.config.get("SHUTDOWN")
+        if not callable(stop):
+            raise ApiError("La aplicación no se puede cerrar desde aquí")
+        # Se cierra un instante después para que la respuesta alcance a llegar
+        import threading
+        threading.Timer(0.5, stop).start()
+        return jsonify({"ok": True})
 
     @app.post("/api/restore")
     def restore():

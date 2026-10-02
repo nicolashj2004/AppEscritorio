@@ -24,14 +24,14 @@ jobs:
       - name: Instalar dependencias
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller
+          pip install -r requirements.txt pyinstaller pystray pillow
 
       - name: Pruebas
         run: python -m unittest discover -s tests -t .
 
       - name: Compilar MisFinanzas.exe
         run: >
-          pyinstaller --onefile --name MisFinanzas --icon finanzas/static/icon.ico
+          pyinstaller --onefile --windowed --name MisFinanzas --icon finanzas/static/icon.ico
           --add-data "finanzas/static;finanzas/static" run.py
 
       - name: Probar el ejecutable
@@ -48,9 +48,12 @@ jobs:
               $ok = $html.Contains("Mis Finanzas") -and $null -ne $dash.totals
             } catch { }
           }
-          Stop-Process -Id $p.Id -Force
-          if (-not $ok) { throw "El ejecutable no respondió" }
+          if (-not $ok) { Stop-Process -Id $p.Id -Force; throw "El ejecutable no respondió" }
           Write-Host "El ejecutable arrancó y respondió correctamente"
+          # El botón "Cerrar la app" debe terminar el proceso (no hay consola que cerrar)
+          Invoke-RestMethod -Method Post http://127.0.0.1:5099/api/shutdown | Out-Null
+          if (-not $p.WaitForExit(20000)) { Stop-Process -Id $p.Id -Force; throw "La app no se cerró con /api/shutdown" }
+          Write-Host "La app se cerró correctamente"
 
       - uses: actions/upload-artifact@v4
         with:

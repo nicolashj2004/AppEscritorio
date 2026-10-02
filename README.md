@@ -45,7 +45,10 @@ el comportamiento. Los datos se guardan en una base de datos SQLite **en tu equi
 Descarga **[MisFinanzas.exe](https://github.com/nicolashj2004/AppEscritorio/releases/latest/download/MisFinanzas.exe)**
 y ábrelo con doble clic. No necesitas Python ni nada más.
 
-- Se abre una ventana negra (déjala abierta mientras usas la app) y la app aparece en el navegador.
+- La app se abre en el navegador, sin ventana de consola. Mientras está abierta aparece un
+  ícono de Mis Finanzas junto al reloj de Windows (puede estar dentro de la flechita ^):
+  clic para volver a abrirla y clic derecho → **Salir** para cerrarla. También puedes usar el
+  botón **⏻ Cerrar la app** del menú lateral.
 - La primera vez Windows puede mostrar *"Windows protegió su PC"*, porque el programa no está
   firmado: haz clic en **Más información → Ejecutar de todas formas**.
 - Los datos se guardan en `%LOCALAPPDATA%\MisFinanzas\finanzas.db` del propio computador.

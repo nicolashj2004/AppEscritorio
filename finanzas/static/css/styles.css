@@ -110,6 +110,10 @@ a { color: var(--primary); }
 .sidebar nav a:hover { background: var(--surface-2); color: var(--text); }
 .sidebar nav a.active { background: var(--primary-soft); color: var(--primary); }
 .sidebar-foot { margin-top: auto; font-size: 12px; color: var(--muted); padding: 10px; }
+.shutdown-btn { display: block; width: 100%; margin-bottom: 10px; color: var(--text-2); }
+.shutdown-btn[hidden] { display: none; }
+.closed-screen { min-height: 100vh; display: grid; place-items: center; text-align: center; padding: 24px; }
+.closed-screen .big { font-size: 48px; }
 
 .main { min-width: 0; }
 .topbar {
