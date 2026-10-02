@@ -1297,6 +1297,17 @@
     else if (e.key === "t" || e.key === "T") setMonth(currentMonth());
   });
 
+  // Botón para cerrar la app (solo cuando se ejecuta desde run.py / el .exe)
+  api("GET", "/api/info").then((info) => { $("#shutdownBtn").hidden = !info.can_shutdown; }).catch(() => {});
+  $("#shutdownBtn").addEventListener("click", async () => {
+    if (!confirmAction("¿Cerrar Mis Finanzas? Tus datos ya están guardados.")) return;
+    try {
+      await api("POST", "/api/shutdown");
+      document.body.innerHTML = `<div class="closed-screen"><div><div class="big">👋</div>
+        <h2>Mis Finanzas se cerró</h2><p class="muted">Tus datos quedaron guardados. Ya puedes cerrar esta pestaña.</p></div></div>`;
+    } catch (err) { toast(err.message, true); }
+  });
+
   applyTheme(storageGet("finanzas.theme"));
   if (storageGet("finanzas.invDisplay") === "USD") state.invDisplay = "USD";
   if (["expense", "income"].includes(storageGet("finanzas.flow"))) state.flow = storageGet("finanzas.flow");

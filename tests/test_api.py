@@ -364,6 +364,17 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(res.status_code, 400)
         self.assertIn("db_path", self.client.get("/api/info").get_json())
 
+    def test_shutdown(self):
+        # Sin run.py no hay forma de cerrar la app
+        self.assertFalse(self.client.get("/api/info").get_json()["can_shutdown"])
+        self.assertEqual(self.client.post("/api/shutdown").status_code, 400)
+        import threading
+        called = threading.Event()
+        self.app.config["SHUTDOWN"] = called.set
+        self.assertTrue(self.client.get("/api/info").get_json()["can_shutdown"])
+        self.assertEqual(self.client.post("/api/shutdown").status_code, 200)
+        self.assertTrue(called.wait(3))
+
     def test_backup_download(self):
         res = self.client.get("/api/backup")
         self.assertEqual(res.status_code, 200)
