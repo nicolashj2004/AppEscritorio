@@ -289,6 +289,23 @@ class ApiTest(unittest.TestCase):
         res = self.client.post(f"/api/goals/{goal['id']}/contribute", json={"amount": -500}).get_json()
         self.assertEqual(res["saved"], 0)
 
+    def test_restore_backup(self):
+        import io
+        self.post("/api/goals", {"name": "Viaje", "target": 1000})
+        backup = self.client.get("/api/backup").data
+        self.post("/api/goals", {"name": "Carro", "target": 5000})
+        self.assertEqual(len(self.client.get("/api/goals").get_json()), 2)
+
+        res = self.client.post("/api/restore", data={"file": (io.BytesIO(backup), "respaldo.db")},
+                               content_type="multipart/form-data")
+        self.assertEqual(res.status_code, 200, res.get_json())
+        self.assertEqual([g["name"] for g in self.client.get("/api/goals").get_json()], ["Viaje"])
+
+        res = self.client.post("/api/restore", data={"file": (io.BytesIO(b"hola"), "x.db")},
+                               content_type="multipart/form-data")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("db_path", self.client.get("/api/info").get_json())
+
     def test_backup_download(self):
         res = self.client.get("/api/backup")
         self.assertEqual(res.status_code, 200)

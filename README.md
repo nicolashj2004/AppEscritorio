@@ -33,8 +33,24 @@ el comportamiento. Los datos se guardan en una base de datos SQLite **en tu equi
   y actualizaciones de valor. Cada inversión puede estar en **pesos o dólares**; el portafolio
   se ve en COP o USD usando la TRM del mes (escrita a mano o traída de la TRM oficial).
 - **Metas de ahorro**: objetivo, abonos/retiros y cuánto ahorrar al mes para cumplirla.
-- **Respaldo**: descarga una copia de la base de datos desde *Ajustes*.
+- **Respaldo**: descarga una copia de la base de datos y restáurala desde *Ajustes*.
 - Tema claro/oscuro y diseño adaptable a pantallas pequeñas.
+
+## Descargar para Windows (sin instalar nada)
+
+Descarga **[MisFinanzas.exe](https://github.com/nicolashj2004/AppEscritorio/releases/latest/download/MisFinanzas.exe)**
+y ábrelo con doble clic. No necesitas Python ni nada más.
+
+- Se abre una ventana negra (déjala abierta mientras usas la app) y la app aparece en el navegador.
+- La primera vez Windows puede mostrar *"Windows protegió su PC"*, porque el programa no está
+  firmado: haz clic en **Más información → Ejecutar de todas formas**.
+- Los datos se guardan en `%LOCALAPPDATA%\MisFinanzas\finanzas.db` del propio computador.
+  Para pasar datos de otro equipo: *Ajustes → Descargar respaldo* en el viejo y
+  *Ajustes → Restaurar respaldo* en el nuevo.
+- Cada vez que se hace merge a `main`, GitHub compila una versión nueva del `.exe`
+  (ver la página *Releases* del repositorio).
+
+## Ejecutar desde el código
 
 ## Requisitos
 
@@ -75,5 +91,6 @@ finanzas/app.py         # API REST (Flask) y cálculos del dashboard
 finanzas/investments.py # cálculos del portafolio de inversiones
 finanzas/static/        # interfaz (HTML + CSS + JS, Chart.js incluido: funciona sin internet)
 seed_demo.py            # datos de ejemplo
+.github/workflows/      # compila MisFinanzas.exe en Windows y lo publica en Releases
 tests/                  # pruebas: python -m unittest discover -s tests
 ```
