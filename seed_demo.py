@@ -41,6 +41,9 @@ def main():
                    due_day, interest_rate, color) VALUES (?, ?, ?, ?, ?, ?, ?, 2.1, ?)""",
             (name, bank, last4, limit, initial, cut, due, color))
         cards.append(cur.lastrowid)
+    debit_card = conn.execute(
+        """INSERT INTO cards (name, bank, last4, color, kind)
+           VALUES ('Débito Ahorros', 'Bancolombia', '7712', '#1baf7a', 'debit')""").lastrowid
 
     rec = [
         ("Salario", 6_500_000, "income", "Salario", "transfer", None, 25),
@@ -83,14 +86,15 @@ def main():
         for cname, names, lo, hi, count in variable:
             for _ in range(count + rnd.randint(-1, 2)):
                 use_card = rnd.random() < 0.45
+                method = "card" if use_card else rnd.choice(["debit", "cash"])
                 conn.execute(
                     """INSERT INTO transactions (date, description, amount, type, category_id,
                            payment_method, card_id, installments)
                        VALUES (?, ?, ?, 'expense', ?, ?, ?, ?)""",
                     (day_in_month(month, rnd.randint(1, max(last_day, 1))), rnd.choice(names),
                      round(rnd.uniform(lo, hi), -3), cat[cname],
-                     "card" if use_card else rnd.choice(["debit", "cash"]),
-                     rnd.choice(cards) if use_card else None,
+                     method,
+                     rnd.choice(cards) if use_card else debit_card if method == "debit" else None,
                      rnd.choice([1, 1, 1, 3, 6]) if use_card else 1))
         if month != this_month or today.day > 20:
             conn.execute(

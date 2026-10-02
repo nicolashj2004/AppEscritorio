@@ -30,7 +30,8 @@ class ApiTest(unittest.TestCase):
 
     def test_card_balance_and_available_across_months(self):
         card = self.post("/api/cards", {"name": "Visa", "credit_limit": 1000,
-                                        "initial_balance": 100, "cut_day": 15, "due_day": 31})
+                                        "initial_balance": 100, "cut_day": 15, "due_day": 31,
+                                        "due_next_month": "0"})
         self.post("/api/transactions", {"date": "2026-08-10", "amount": 300, "type": "expense",
                                         "payment_method": "card", "card_id": card["id"]})
         self.post("/api/transactions", {"date": "2026-09-05", "amount": 200, "type": "card_payment",
@@ -281,6 +282,63 @@ class ApiTest(unittest.TestCase):
                                                          "date": "2026-09-01", "invested": 1})
         self.assertEqual(res.status_code, 400)
         self.assertEqual(self.client.put("/api/fx-rates", json={"month": "2026-09", "rate": 0}).status_code, 400)
+
+    def test_due_date_next_month(self):
+        # Corte 10 y pago 25: por defecto el pago es el mes siguiente; se puede elegir el mismo mes
+        same = self.post("/api/cards", {"name": "A", "credit_limit": 100, "cut_day": 10, "due_day": 25,
+                                        "due_next_month": "0"})
+        nxt = self.post("/api/cards", {"name": "B", "credit_limit": 100, "cut_day": 10, "due_day": 25})
+        auto = self.post("/api/cards", {"name": "C", "credit_limit": 100, "cut_day": 30, "due_day": 15})
+        cards = {c["name"]: c for c in self.client.get("/api/cards?month=2026-10").get_json()}
+        self.assertEqual((cards["A"]["cut_date"], cards["A"]["due_date"]), ("2026-10-10", "2026-10-25"))
+        self.assertEqual(cards["B"]["due_date"], "2026-11-25")
+        self.assertTrue(cards["B"]["due_next_month"])
+        self.assertEqual(cards["C"]["due_date"], "2026-11-15")  # pago antes del corte: mes siguiente
+        dec = {c["name"]: c for c in self.client.get("/api/cards?month=2026-12").get_json()}
+        self.assertEqual(dec["B"]["due_date"], "2027-01-25")
+        self.assertIsNotNone(same and nxt and auto)
+
+    def test_debit_cards(self):
+        debit = self.post("/api/cards", {"kind": "debit", "name": "Débito Nu", "credit_limit": 999,
+                                         "cut_day": 5})
+        credit = self.post("/api/cards", {"name": "Visa", "credit_limit": 1000})
+        self.assertEqual((debit["kind"], debit["credit_limit"], debit["cut_day"]), ("debit", 0, None))
+        tx = self.post("/api/transactions", {"date": "2026-10-03", "amount": 50, "type": "expense",
+                                             "payment_method": "debit", "card_id": debit["id"]})
+        self.assertEqual(tx["card_name"], "Débito Nu")
+        # Sin tarjeta también se puede pagar con débito
+        self.post("/api/transactions", {"date": "2026-10-03", "amount": 5, "type": "expense",
+                                        "payment_method": "debit"})
+        cards = {c["name"]: c for c in self.client.get("/api/cards?month=2026-10").get_json()}
+        self.assertEqual((cards["Débito Nu"]["month_spent"], cards["Débito Nu"]["balance"]), (50, 0))
+        d = self.client.get("/api/dashboard?month=2026-10").get_json()
+        self.assertEqual([c["name"] for c in d["cards"]], ["Visa"])
+        self.assertEqual(d["card_totals"]["limit"], 1000)
+        # Tipos de tarjeta incorrectos
+        bad = [
+            {"type": "expense", "payment_method": "card", "card_id": debit["id"]},
+            {"type": "card_payment", "card_id": debit["id"]},
+            {"type": "expense", "payment_method": "debit", "card_id": credit["id"]},
+        ]
+        for extra in bad:
+            res = self.client.post("/api/transactions", json={"date": "2026-10-03", "amount": 1, **extra})
+            self.assertEqual(res.status_code, 400, extra)
+
+    def test_transaction_type_list_filter(self):
+        card = self.post("/api/cards", {"name": "Visa", "credit_limit": 1000})
+        self.post("/api/transactions", {"date": "2026-10-01", "amount": 1, "type": "expense"})
+        self.post("/api/transactions", {"date": "2026-10-01", "amount": 2, "type": "income"})
+        self.post("/api/transactions", {"date": "2026-10-01", "amount": 3, "type": "card_payment",
+                                        "card_id": card["id"]})
+        out = self.client.get("/api/transactions?month=2026-10&type=expense,card_payment").get_json()
+        self.assertEqual(sorted(t["type"] for t in out), ["card_payment", "expense"])
+        inc = self.client.get("/api/transactions?month=2026-10&type=income").get_json()
+        self.assertEqual([t["type"] for t in inc], ["income"])
+        # "Registrar todos" puede limitarse a gastos o ingresos
+        self.post("/api/recurring", {"description": "Arriendo", "amount": 10, "type": "expense", "day": 1})
+        self.post("/api/recurring", {"description": "Salario", "amount": 20, "type": "income", "day": 1})
+        gen = self.client.post("/api/recurring/generate", json={"month": "2026-11", "type": "income"}).get_json()
+        self.assertEqual(gen["created"], 1)
 
     def test_goals_contribution(self):
         goal = self.post("/api/goals", {"name": "Viaje", "target": 1000})

@@ -174,6 +174,11 @@ def migrate(conn):
     cols = {r[1] for r in conn.execute("PRAGMA table_info(transactions)")}
     if "period" not in cols:
         conn.execute("ALTER TABLE transactions ADD COLUMN period TEXT")
+    card_cols = {r[1] for r in conn.execute("PRAGMA table_info(cards)")}
+    if "kind" not in card_cols:  # credit | debit
+        conn.execute("ALTER TABLE cards ADD COLUMN kind TEXT NOT NULL DEFAULT 'credit'")
+    if "due_next_month" not in card_cols:  # 1: el pago cae el mes siguiente al corte
+        conn.execute("ALTER TABLE cards ADD COLUMN due_next_month INTEGER")
     inv_cols = {r[1] for r in conn.execute("PRAGMA table_info(investments)")}
     if "currency" not in inv_cols:
         conn.execute("ALTER TABLE investments ADD COLUMN currency TEXT NOT NULL DEFAULT 'COP'")

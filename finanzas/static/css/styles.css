@@ -118,6 +118,10 @@ a { color: var(--primary); }
 }
 .topbar h1 { font-size: 19px; margin: 0; flex: 1 1 auto; }
 .month-nav { display: flex; align-items: center; gap: 4px; }
+.flow-toggle { flex: none; }
+.flow-toggle label { padding: 6px 14px; white-space: nowrap; }
+.flow-toggle label:has(input[value=expense]:checked) { background: var(--bad-bg); color: var(--bad); }
+.flow-toggle label:has(input[value=income]:checked) { background: var(--good-bg); color: var(--good); }
 .month-label { position: relative; font-weight: 600; min-width: 150px; text-align: center; cursor: pointer; padding: 6px 8px; border-radius: 8px; }
 .month-label:hover { background: var(--surface-2); }
 .month-label input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; }
@@ -237,6 +241,9 @@ tbody tr:hover { background: var(--surface-2); }
 .cc-meta { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--text-2); flex-wrap: wrap; gap: 6px; }
 .cc-actions { display: flex; gap: 6px; margin-top: 14px; flex-wrap: wrap; }
 .cc.inactive { opacity: .6; }
+.cc-kind { font-size: 12px; font-weight: 600; opacity: .9; text-transform: uppercase; letter-spacing: .05em; }
+.section-title { font-size: 16px; margin: 8px 0 2px; }
+.section-sub { margin: 0 0 12px; font-size: 13px; }
 
 /* goals */
 .fx-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 16px; }
@@ -292,6 +299,7 @@ dialog::backdrop { background: rgba(10, 14, 20, .5); }
   .topbar { padding: 12px 16px; gap: 8px; }
   .topbar h1 { font-size: 17px; }
   .month-nav { order: 3; width: 100%; justify-content: center; }
+  .flow-toggle { order: 4; width: 100%; }
   .content { padding: 16px; }
   .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
   .kpi { padding: 14px; }
