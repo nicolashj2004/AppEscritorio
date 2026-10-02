@@ -1066,6 +1066,44 @@ def create_app(db_path=None):
     def dashboard():
         return jsonify(build_dashboard(conn(), arg_month()))
 
+    @app.get("/api/info")
+    def info():
+        return jsonify({"db_path": os.path.abspath(app.config["DB_PATH"])})
+
+    @app.post("/api/restore")
+    def restore():
+        """Reemplaza todos los datos por los de un archivo de respaldo (.db)."""
+        import sqlite3
+        import tempfile
+
+        upload = request.files.get("file")
+        if not upload:
+            raise ApiError("Selecciona el archivo de respaldo")
+        payload = upload.read()
+        if not payload.startswith(b"SQLite format 3"):
+            raise ApiError("El archivo no es un respaldo válido de Mis Finanzas")
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        try:
+            tmp.write(payload)
+            tmp.close()
+            src = sqlite3.connect(tmp.name)
+            try:
+                tables = {r[0] for r in src.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                if not {"transactions", "categories", "cards"} <= tables:
+                    raise ApiError("El archivo no es un respaldo válido de Mis Finanzas")
+                c = g.pop("conn", None)
+                if c is not None:
+                    c.close()
+                dest = sqlite3.connect(app.config["DB_PATH"])
+                src.backup(dest)
+                dest.close()
+            finally:
+                src.close()
+        finally:
+            os.unlink(tmp.name)
+        db.init_db(app.config["DB_PATH"])  # aplica migraciones si el respaldo es antiguo
+        return jsonify({"ok": True})
+
     @app.get("/api/backup")
     def backup():
         # Copia consistente de la base de datos usando la API de backup de SQLite

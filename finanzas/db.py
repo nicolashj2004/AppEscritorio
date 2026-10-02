@@ -1,9 +1,25 @@
 """Capa de acceso a datos: esquema SQLite, conexión y datos iniciales."""
 import os
 import sqlite3
+import sys
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_DB_PATH = os.path.join(BASE_DIR, "data", "finanzas.db")
+
+
+def default_db_path():
+    """Ubicación de la base de datos.
+
+    Desde el código fuente: data/finanzas.db junto a la app. En el ejecutable (.exe) la
+    carpeta de la app es temporal, así que los datos van a la carpeta del usuario
+    (en Windows: %LOCALAPPDATA%\\MisFinanzas).
+    """
+    if getattr(sys, "frozen", False):
+        base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), ".local", "share")
+        return os.path.join(base, "MisFinanzas", "finanzas.db")
+    return os.path.join(BASE_DIR, "data", "finanzas.db")
+
+
+DEFAULT_DB_PATH = default_db_path()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (

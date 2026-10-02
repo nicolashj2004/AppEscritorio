@@ -1,0 +1,70 @@
+name: Ejecutable Windows
+
+# Compila MisFinanzas.exe en Windows. En cada PR queda como artefacto descargable;
+# al hacer merge a main se publica como Release para que cualquiera lo descargue.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Pruebas
+        run: python -m unittest discover -s tests -t .
+
+      - name: Compilar MisFinanzas.exe
+        run: >
+          pyinstaller --onefile --name MisFinanzas --icon finanzas/static/icon.ico
+          --add-data "finanzas/static;finanzas/static" run.py
+
+      - name: Probar el ejecutable
+        shell: pwsh
+        run: |
+          $env:FINANZAS_DB = "$env:RUNNER_TEMP\prueba.db"
+          $p = Start-Process -FilePath dist\MisFinanzas.exe -ArgumentList "--no-browser", "--port", "5099" -PassThru
+          $ok = $false
+          for ($i = 0; $i -lt 30 -and -not $ok; $i++) {
+            Start-Sleep -Seconds 2
+            try {
+              $html = (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:5099/).Content
+              $dash = Invoke-RestMethod http://127.0.0.1:5099/api/dashboard
+              $ok = $html.Contains("Mis Finanzas") -and $null -ne $dash.totals
+            } catch { }
+          }
+          Stop-Process -Id $p.Id -Force
+          if (-not $ok) { throw "El ejecutable no respondió" }
+          Write-Host "El ejecutable arrancó y respondió correctamente"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MisFinanzas-exe
+          path: dist/MisFinanzas.exe
+
+      - name: Publicar versión
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v1.${{ github.run_number }}"
+          gh release create "$tag" dist/MisFinanzas.exe \
+            --title "Mis Finanzas $tag" \
+            --notes "Descarga **MisFinanzas.exe** y ábrelo con doble clic. No necesitas instalar nada más. Tus datos se guardan en %LOCALAPPDATA%\\MisFinanzas en tu propio computador." \
+            --latest

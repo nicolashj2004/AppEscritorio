@@ -1024,16 +1024,20 @@
 
   // ------------------------------------------------------------------ ajustes
   async function renderSettings() {
+    const info = await api("GET", "/api/info").catch(() => ({ db_path: "" }));
     content.innerHTML = `
       <div class="grid grid-2">
         <div class="panel"><h3>Moneda</h3><p class="sub">Formato en el que se muestran los montos</p>
           <div class="toolbar"><select id="currency">
             ${["COP", "USD", "EUR", "MXN", "ARS", "CLP", "PEN"].map((c) => `<option${c === state.settings.currency ? " selected" : ""}>${c}</option>`).join("")}
           </select></div></div>
-        <div class="panel"><h3>Respaldo</h3><p class="sub">Todos tus datos viven en el archivo <code>data/finanzas.db</code> (SQLite) dentro de la carpeta de la app.
-          Descarga una copia de seguridad de vez en cuando.</p>
-          <a class="btn" href="/api/backup">⬇ Descargar respaldo</a>
-          <p class="sub" style="margin-top:12px">Para restaurar: cierra la app y reemplaza <code>data/finanzas.db</code> por el archivo de respaldo.</p></div>
+        <div class="panel"><h3>Respaldo</h3><p class="sub">Todos tus datos viven en este archivo de tu equipo:<br>
+          <code style="word-break:break-all">${esc(info.db_path)}</code><br>Descarga una copia de seguridad de vez en cuando.</p>
+          <div class="toolbar">
+            <a class="btn" href="/api/backup">⬇ Descargar respaldo</a>
+            <label class="btn">⬆ Restaurar respaldo<input type="file" id="restoreFile" accept=".db" hidden></label>
+          </div>
+          <p class="sub" style="margin:0">Restaurar reemplaza <b>todos</b> los datos actuales por los del archivo. Sirve para pasar tus datos a otro computador.</p></div>
         <div class="panel"><h3>Mes de los ingresos</h3>
           <p class="sub">Si te pagan al final del mes (por ejemplo el penúltimo día hábil), los ingresos recibidos desde este día
             se asignarán automáticamente al mes siguiente. Siempre puedes cambiarlo en cada movimiento con "Corresponde al mes".</p>
@@ -1045,6 +1049,20 @@
         <div class="panel"><h3>Atajos de teclado</h3><p class="sub" style="margin:0">
           <b>N</b>: nuevo movimiento · <b>←</b>/<b>→</b>: mes anterior/siguiente · <b>T</b>: volver al mes actual</p></div>
       </div>`;
+    $("#restoreFile").addEventListener("change", async (e) => {
+      const file = e.target.files[0];
+      e.target.value = "";
+      if (!file || !confirmAction(`¿Reemplazar todos tus datos actuales por los de "${file.name}"? Esto no se puede deshacer.`)) return;
+      const form = new FormData();
+      form.append("file", file);
+      try {
+        const res = await fetch("/api/restore", { method: "POST", body: form });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(json.error || `Error ${res.status}`);
+        state.settings = await api("GET", "/api/settings");
+        toast("Respaldo restaurado");
+      } catch (err) { toast(err.message, true); }
+    });
     $("#incomeShift").addEventListener("change", async (e) => {
       try {
         state.settings = await api("PUT", "/api/settings", { income_shift_day: e.target.value });
