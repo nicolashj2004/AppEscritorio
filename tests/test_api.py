@@ -340,6 +340,94 @@ class ApiTest(unittest.TestCase):
         gen = self.client.post("/api/recurring/generate", json={"month": "2026-11", "type": "income"}).get_json()
         self.assertEqual(gen["created"], 1)
 
+    def test_installment_plan(self):
+        card = self.post("/api/cards", {"name": "Visa", "credit_limit": 5_000_000, "cut_day": 10,
+                                        "due_day": 25, "interest_rate": 1.9})
+        mercado = self.category_id("Mercado")
+        tx = self.post("/api/transactions", {
+            "date": "2026-10-03", "amount": 1_200_000, "type": "expense", "category_id": mercado,
+            "payment_method": "card", "card_id": card["id"], "installments": 6,
+            "financed": "1", "rate": 2, "description": "Nevera"})
+        self.assertEqual((tx["financed"], tx["rate"]), (1, 2))
+
+        def totals(month):
+            return self.client.get(f"/api/dashboard?month={month}").get_json()["totals"]
+
+        # La compra no suma completa en octubre; la cuota 1 (corte 10 oct) se paga en noviembre
+        self.assertEqual(totals("2026-10")["expense"], 0)
+        self.assertEqual(totals("2026-11")["expense"], 200_000 + 24_000)
+        self.assertEqual(totals("2026-12")["expense"], 200_000 + 20_000)
+        cats = {c["name"]: c["spent"] for c in self.client.get("/api/categories?month=2026-11").get_json()}
+        self.assertEqual((cats["Mercado"], cats["Intereses"]), (200_000, 24_000))
+
+        # La deuda sube por el total al comprar y por los intereses en cada corte
+        oct_card = self.client.get("/api/cards?month=2026-10").get_json()[0]
+        self.assertEqual(oct_card["balance"], 1_224_000)
+        self.assertEqual(oct_card["statement_payment"], 224_000)
+        plan = self.client.get("/api/cards?month=2026-11").get_json()[0]["plans"][0]
+        self.assertEqual((plan["current_number"], plan["remaining"], plan["pending_capital"]),
+                         (1, 5, 1_000_000))
+        self.assertEqual(plan["last_period"], "2027-04")
+
+        # En movimientos de noviembre aparecen la cuota y sus intereses; la compra en octubre no suma
+        nov = self.client.get("/api/transactions?month=2026-11").get_json()
+        self.assertEqual(sorted((t["installment_label"], t["amount"]) for t in nov),
+                         [("Cuota 1/6", 24_000), ("Cuota 1/6", 200_000)])
+        octo = self.client.get("/api/transactions?month=2026-10").get_json()
+        self.assertEqual([t["counts"] for t in octo], [False])
+
+        # Abono a capital el 15 de nov: las cuotas que faltan desde el corte de diciembre bajan
+        self.post("/api/transactions", {"date": "2026-11-15", "amount": 400_000, "type": "card_payment",
+                                        "card_id": card["id"], "applies_to": tx["id"]})
+        dec = self.client.get("/api/cards?month=2026-12").get_json()[0]["plans"][0]
+        self.assertEqual(dec["current_number"], 2)
+        jan = self.client.get("/api/transactions?month=2027-01").get_json()
+        capital = next(t["amount"] for t in jan if t["installment_part"] == "capital")
+        self.assertAlmostEqual(capital, (1_000_000 - 1_000_000 / 5 - 400_000) / 4, places=1)
+        ahead = self.client.get("/api/dashboard?month=2026-11").get_json()["installments_ahead"]
+        self.assertEqual(ahead[0]["month"], "2026-11")
+        self.assertEqual(ahead[0]["amount"], 224_000)
+
+        # Un abono solo aplica a compras a cuotas de la misma tarjeta
+        other = self.post("/api/cards", {"name": "Master", "credit_limit": 100})
+        res = self.client.post("/api/transactions", json={
+            "date": "2026-11-15", "amount": 1, "type": "card_payment", "card_id": other["id"],
+            "applies_to": tx["id"]})
+        self.assertEqual(res.status_code, 400)
+
+        # Al borrar la compra desaparece su plan
+        self.client.delete(f"/api/transactions/{tx['id']}")
+        self.assertEqual(totals("2026-11")["expense"], 0)
+
+    def test_installment_rate_defaults_to_card_and_legacy_purchases(self):
+        card = self.post("/api/cards", {"name": "Visa", "credit_limit": 1000, "cut_day": 10,
+                                        "due_day": 25, "interest_rate": 1.5})
+        planned = self.post("/api/transactions", {
+            "date": "2026-10-01", "amount": 300, "type": "expense", "payment_method": "card",
+            "card_id": card["id"], "installments": 3, "financed": True})
+        self.assertEqual(planned["rate"], 1.5)
+        # Compra con cuotas registrada como antes (sin plan): cuenta completa y queda por revisar
+        legacy = self.post("/api/transactions", {
+            "date": "2026-10-02", "amount": 600, "type": "expense", "payment_method": "card",
+            "card_id": card["id"], "installments": 6})
+        self.assertEqual(legacy["financed"], 0)
+        c = self.client.get("/api/cards?month=2026-10").get_json()[0]
+        self.assertEqual([u["id"] for u in c["unplanned"]], [legacy["id"]])
+        self.assertEqual(self.client.get("/api/dashboard?month=2026-10").get_json()["totals"]["expense"], 600)
+        # Revisarla = editarla y marcarla como compra a cuotas
+        self.client.put(f"/api/transactions/{legacy['id']}", json={
+            "date": "2026-10-02", "amount": 600, "type": "expense", "payment_method": "card",
+            "card_id": card["id"], "installments": 6, "financed": "1", "rate": 0})
+        c = self.client.get("/api/cards?month=2026-10").get_json()[0]
+        self.assertEqual(c["unplanned"], [])
+        self.assertEqual(self.client.get("/api/dashboard?month=2026-11").get_json()["totals"]["expense"],
+                         round(100 + 300 * 0.015 + 100, 2))
+        # Cambiar el corte de la tarjeta recalcula los planes
+        self.client.put(f"/api/cards/{card['id']}", json={
+            "name": "Visa", "credit_limit": 1000, "cut_day": 30, "due_day": 15, "interest_rate": 1.5})
+        self.assertEqual(self.client.get("/api/dashboard?month=2026-11").get_json()["totals"]["expense"],
+                         round(100 + 300 * 0.015 + 100, 2))
+
     def test_goals_contribution(self):
         goal = self.post("/api/goals", {"name": "Viaje", "target": 1000})
         res = self.client.post(f"/api/goals/{goal['id']}/contribute", json={"amount": 300}).get_json()

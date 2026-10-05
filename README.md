@@ -23,6 +23,11 @@ el comportamiento. Los datos se guardan en una base de datos SQLite **en tu equi
   tarjeta reducen la deuda y **no** cuentan en el total de gastos, para no contar doble; si les
   asignas una categoría, suman al gasto y presupuesto de esa categoría).
   Las tarjetas débito registran con cuál pagaste cada gasto y cuánto gastas con cada una.
+- **Compras a cuotas**: cada compra tiene su número de cuotas y su propia tasa de interés
+  mensual. Cada mes cuenta solo la cuota que se paga (capital + intereses, con los intereses en
+  la categoría *Intereses*); la tarjeta muestra el plan de cada compra (cuota actual, saldo y
+  mes final), el pago estimado del corte y permite abonar a capital. El dashboard muestra las
+  cuotas comprometidas de los próximos 12 meses.
 - **Selector Todo / Gastos / Ingresos** fijo en la barra superior para Movimientos, Categorías
   y Gastos fijos.
 - **Movimientos**: gastos, ingresos y pagos a tarjeta con categoría, medio de pago, notas;
@@ -96,6 +101,7 @@ run.py                  # arranca el servidor y abre el navegador
 finanzas/db.py          # esquema SQLite y categorías por defecto
 finanzas/app.py         # API REST (Flask) y cálculos del dashboard
 finanzas/investments.py # cálculos del portafolio de inversiones
+finanzas/installments.py # plan de pagos de las compras a cuotas
 finanzas/static/        # interfaz (HTML + CSS + JS, Chart.js incluido: funciona sin internet)
 seed_demo.py            # datos de ejemplo
 .github/workflows/      # compila MisFinanzas.exe en Windows y lo publica en Releases

@@ -113,6 +113,15 @@ def main():
                            card_id) VALUES (?, 'Pago tarjeta', ?, 'card_payment', 'transfer', ?)""",
                     (day_in_month(month, 20), round(spent * rnd.uniform(0.7, 1.0), -3), card_id))
 
+    # Compras a cuotas: con plan de pagos y tasa propia (una queda sin plan, como las antiguas)
+    from finanzas import installments
+    financed = [r[0] for r in conn.execute(
+        "SELECT id FROM transactions WHERE installments > 1 ORDER BY date DESC")]
+    for tx_id in financed[1:]:
+        conn.execute("UPDATE transactions SET financed = 1, rate = ? WHERE id = ?",
+                     (rnd.choice([0, 1.6, 1.9, 2.1]), tx_id))
+        installments.regenerate(conn, tx_id)
+
     # Inversiones: aporte inicial hace 6 meses, aportes mensuales y valorizaciones
     for back, rate in zip(range(5, -1, -1), [4100, 4050, 3980, 3900, 3800, 3700]):
         conn.execute("INSERT OR REPLACE INTO fx_rates (month, rate) VALUES (?, ?)",

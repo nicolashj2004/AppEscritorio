@@ -221,6 +221,7 @@ tbody tr:hover { background: var(--surface-2); }
 .pill.card_payment { background: var(--info-bg); color: var(--info); }
 .pill.ok { background: var(--good-bg); color: var(--good); }
 .pill.pending { background: var(--warn-bg); color: var(--warn); }
+.pill.installment { background: var(--primary-soft); color: var(--primary); }
 .pill.off { background: var(--surface-2); color: var(--muted); }
 .budget-input { max-width: 150px; text-align: right; }
 
@@ -245,6 +246,16 @@ tbody tr:hover { background: var(--surface-2); }
 .cc-meta { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--text-2); flex-wrap: wrap; gap: 6px; }
 .cc-actions { display: flex; gap: 6px; margin-top: 14px; flex-wrap: wrap; }
 .cc.inactive { opacity: .6; }
+.cc-due { display: flex; justify-content: space-between; gap: 8px; margin-top: 10px; padding: 8px 10px;
+  background: var(--surface-2); border-radius: 8px; font-size: 13px; }
+.cc-plans { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
+.cc-plans summary { cursor: pointer; font-weight: 600; font-size: 13.5px; }
+.plan { padding: 10px 0; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 4px; }
+.plan:last-child { border-bottom: none; }
+.plan .btn { align-self: flex-start; margin-top: 4px; }
+.plan-top, .plan-meta { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 13px; align-items: center; }
+.plan-meta { font-size: 12.5px; }
+.cc-unplanned { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
 .cc-kind { font-size: 12px; font-weight: 600; opacity: .9; text-transform: uppercase; letter-spacing: .05em; }
 .section-title { font-size: 16px; margin: 8px 0 2px; }
 .section-sub { margin: 0 0 12px; font-size: 13px; }

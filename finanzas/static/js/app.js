@@ -320,8 +320,12 @@
       type: "expense", date: defaultDateForMonth(state.month), payment_method: "debit", installments: 1, ...preset,
     };
     if (!values.period) values.period = autoPeriod(values.type, values.date);
+    // Compras a cuotas: las nuevas se reparten por defecto; las antiguas se revisan a mano
+    values.financed = tx ? !!tx.financed : true;
+    if (values.rate == null) values.rate = "";
     // Si el usuario elige el mes a mano, ya no se recalcula automáticamente
     let periodTouched = !!tx || !!preset.period;
+    const isInstallment = (v) => v.type === "expense" && v.payment_method === "card" && Number(v.installments) > 1;
     openForm({
       title: tx ? "Editar movimiento" : preset.recurring_id ? "Registrar fijo del mes" : "Nuevo movimiento",
       values,
@@ -345,19 +349,45 @@
           options: (v) => txCardOptions(v, tx && tx.card_id), showIf: showTxCard },
         { name: "installments", label: "Número de cuotas", type: "number", min: 1, step: 1,
           showIf: (v) => v.type === "expense" && v.payment_method === "card" },
+        { name: "financed", label: "Repartir en cuotas: cada mes cuenta solo la cuota", type: "checkbox", full: true,
+          showIf: isInstallment },
+        { name: "rate", label: "Tasa de interés mensual de esta compra (%)", type: "number", step: "any", min: 0, full: true,
+          placeholder: "0 si es sin intereses", showIf: (v) => isInstallment(v) && v.financed,
+          hint: (v) => installmentPreview(v) },
         { name: "notes", label: "Notas", type: "textarea", full: true },
       ],
       onChange: (name, v, set) => {
+        // La tasa se propone con la de la tarjeta; el usuario la ajusta por compra
+        if ((name === "card_id" || name === "installments" || name === "financed") && v.rate === "") {
+          const card = state.cards.find((c) => c.id === Number(v.card_id));
+          if (card && isInstallment(v)) set("rate", card.interest_rate || 0);
+        }
         if (name === "period") periodTouched = true;
         else if ((name === "date" || name === "type") && !periodTouched) set("period", autoPeriod(v.type, v.date));
       },
       onSubmit: async (data) => {
         if (preset.recurring_id) data.recurring_id = preset.recurring_id;
+        const appliesTo = preset.applies_to || (tx && tx.applies_to);
+        if (appliesTo) data.applies_to = appliesTo;
         if (tx) await api("PUT", `/api/transactions/${tx.id}`, data);
         else await api("POST", "/api/transactions", data);
         toast(tx ? "Movimiento actualizado" : "Movimiento registrado");
       },
     });
+  }
+
+  // Vista previa de una compra a cuotas (capital fijo + interés sobre el saldo)
+  function installmentPreview(v) {
+    const amount = Number(v.amount) || 0;
+    const n = Number(v.installments) || 1;
+    const card = state.cards.find((c) => c.id === Number(v.card_id));
+    const rate = (v.rate === "" ? (card ? card.interest_rate : 0) : Number(v.rate)) / 100;
+    if (!amount || n < 2) return "";
+    const first = amount / n + amount * rate;
+    const interest = amount * rate * (n + 1) / 2;
+    return rate > 0
+      ? `Primera cuota ≈ ${money(first)} (luego baja) · intereses totales ≈ ${money(interest)}`
+      : `Sin intereses: ${n} cuotas de ${money(amount / n)}`;
   }
 
   function openCardForm(card, kind = "credit") {
@@ -554,11 +584,27 @@
           <div class="panel"><h3>Medios de pago</h3><p class="sub">Cómo pagaste tus gastos este mes</p><div class="bar-list">${methodRows}</div></div>
         </div>
       </div>
+      ${d.installments_ahead.some((x) => x.amount > 0) ? `<div class="panel mb"><div class="panel-head"><div><h3>Cuotas comprometidas</h3>
+          <p class="sub">Lo que ya debes pagar en cuotas de tarjetas, mes a mes (capital + intereses).
+            Este mes: <b>${money(d.installments_ahead[0].amount)}</b>${t.income ? ` · ${pct(d.installments_ahead[0].amount / t.income * 100)} de tus ingresos` : ""}</p></div>
+          <a class="btn btn-sm btn-ghost" href="#tarjetas">Ver</a></div>
+        <div class="chart-box" style="height:220px"><canvas id="instChart" role="img" aria-label="Cuotas comprometidas por mes"></canvas></div></div>` : ""}
       <div class="panel"><div class="panel-head"><div><h3>Gastos más grandes del mes</h3><p class="sub">Top 5</p></div>
         <a class="btn btn-sm btn-ghost" href="#movimientos">Ver todos</a></div><div class="table-wrap">${topRows}</div></div>
     `;
 
     drawTrendChart(d.trend);
+    if ($("#instChart") && window.Chart) {
+      charts.push(new Chart($("#instChart"), {
+        type: "bar",
+        data: {
+          labels: d.installments_ahead.map((x) => monthName(x.month, true)),
+          datasets: [{ label: "Cuotas", data: d.installments_ahead.map((x) => x.amount), backgroundColor: cssVar("--series-1"),
+            borderRadius: 4, borderSkipped: "bottom", maxBarThickness: 28 }],
+        },
+        options: { ...chartBase(), onClick: (_e, els) => { if (els.length) setMonth(d.installments_ahead[els[0].index].month); } },
+      }));
+    }
     drawDailyChart(d.daily, d.budget.total);
   }
 
@@ -646,7 +692,8 @@
       ? [{ value: "", label: "Gastos y pagos a tarjeta" }, { value: "expense", label: "Solo gastos" }, { value: "card_payment", label: "Solo pagos a tarjeta" }]
       : [{ value: "", label: "Todos los tipos" }, ...Object.entries(TX_TYPES).map(([value, label]) => ({ value, label }))];
 
-    const sum = (type) => list.filter((t) => t.type === type).reduce((s, t) => s + t.amount, 0);
+    // Las compras a cuotas no suman completas: suman sus cuotas en el mes que se pagan
+    const sum = (type) => list.filter((t) => t.type === type && t.counts !== false).reduce((s, t) => s + t.amount, 0);
     const catOpts = [{ value: "", label: "Todas las categorías" }, { value: "none", label: "Sin categoría" },
       ...state.categories.filter((c) => flow === "all" || c.type === flow).map((c) => ({ value: c.id, label: `${c.icon} ${c.name}` }))];
     const opt = (arr, sel) => arr.map((o) => `<option value="${esc(o.value)}"${String(o.value) === String(sel) ? " selected" : ""}>${esc(o.label)}</option>`).join("");
@@ -674,14 +721,19 @@
           <tbody>${list.map((t) => `<tr>
             <td class="num">${fmtDate(t.date)}${t.period && t.period !== t.date.slice(0, 7)
               ? `<div class="muted" style="font-size:12px" title="Cuenta para ${esc(monthName(t.period))}">↪ ${esc(monthName(t.period, true))}</div>` : ""}</td>
-            <td>${esc(t.description) || '<span class="muted">—</span>'}${t.notes ? `<div class="muted" style="font-size:12px">${esc(t.notes)}</div>` : ""}</td>
+            <td>${esc(t.description) || '<span class="muted">—</span>'}
+              ${t.installment_of ? `<div><span class="pill installment">${esc(t.installment_label)}${t.installment_part === "interest" ? " · intereses" : ""}</span>
+                <span class="muted" style="font-size:12px">compra del ${fmtDate(t.purchase_date)} ${t.purchase_date.slice(0, 4)}</span></div>` : ""}
+              ${t.counts === false ? `<div><span class="pill installment">A ${t.installments} cuotas${t.rate ? ` · ${pct(t.rate)} mensual` : ""}</span>
+                <span class="muted" style="font-size:12px">cada mes cuenta solo la cuota</span></div>` : ""}
+              ${t.notes ? `<div class="muted" style="font-size:12px">${esc(t.notes)}</div>` : ""}</td>
             <td>${t.category_name ? `<span class="tag"><span class="dot" style="background:${esc(t.category_color)}"></span>${esc(t.category_icon)} ${esc(t.category_name)}</span>` : '<span class="muted">—</span>'}</td>
             <td><span class="pill ${t.type}">${TX_TYPES[t.type]}</span></td>
             <td>${esc(METHODS[t.payment_method] || t.payment_method)}${t.card_name ? `<div class="muted" style="font-size:12px">${t.card_kind === "debit" ? "🏧" : "💳"} ${esc(t.card_name)}${t.installments > 1 ? ` · ${t.installments} cuotas` : ""}</div>` : ""}</td>
-            <td class="right num"><b class="${t.type === "income" ? "pos" : ""}">${t.type === "income" ? "+" : t.type === "expense" ? "−" : ""}${money(t.amount)}</b></td>
-            <td class="row-actions">
+            <td class="right num"><b class="${t.type === "income" ? "pos" : t.counts === false ? "muted" : ""}">${t.type === "income" ? "+" : t.type === "expense" && t.counts !== false ? "−" : ""}${money(t.amount)}</b></td>
+            <td class="row-actions">${t.installment_of ? `<span class="muted" style="font-size:12px" title="Las cuotas se calculan desde la compra">automática</span>` : `
               <button class="icon-btn small" data-act="edit-tx" data-id="${t.id}" title="Editar">✏️</button>
-              <button class="icon-btn small" data-act="del-tx" data-id="${t.id}" title="Eliminar">🗑️</button>
+              <button class="icon-btn small" data-act="del-tx" data-id="${t.id}" title="Eliminar">🗑️</button>`}
             </td></tr>`).join("")}</tbody></table></div>`
           : `<div class="empty"><div class="big">🧾</div><p>No hay movimientos para ${esc(monthName(state.month))} con estos filtros.</p>
              <button class="btn btn-primary" data-act="new-tx">+ Registrar movimiento</button></div>`}
@@ -734,6 +786,22 @@
             </div>
             <div class="cc-meta"><span>✂️ Corte: ${c.cut_date ? fmtDate(c.cut_date) : "—"}</span>
               <span title="Fecha límite para pagar el corte de ${esc(monthName(state.month))}">📅 Pago: ${c.due_date ? fmtDate(c.due_date) : "—"}</span></div>
+            ${c.statement_payment != null ? `<div class="cc-due"><span>Pago estimado del corte de ${esc(monthName(state.month))}</span>
+              <b class="num">${money(c.statement_payment)}</b></div>` : ""}
+            ${c.plans.length ? `<details class="cc-plans"${c.plans.length <= 3 ? " open" : ""}>
+              <summary>🧾 Compras a cuotas (${c.plans.length})</summary>
+              ${c.plans.map((p) => `<div class="plan">
+                <div class="plan-top"><b>${esc(p.description || "Compra")}</b>
+                  <span class="num">${p.current_number ? `Cuota ${p.current_number}/${p.installments}: <b>${money(p.current_payment)}</b>` : `<span class="muted">Primera cuota próximamente</span>`}</span></div>
+                <div class="plan-meta muted">${fmtDate(p.date)} ${p.date.slice(0, 4)} · ${money(p.amount)} a ${p.installments} cuotas${p.rate ? ` · ${pct(p.rate)} mensual` : " · sin intereses"}</div>
+                <div class="plan-meta"><span>Saldo pendiente: <b class="num">${money(p.pending_capital)}</b>${p.remaining ? ` · faltan ${p.remaining}` : " · última cuota"}</span>
+                  <span class="muted">Termina en ${esc(monthName(p.last_period, true))}</span></div>
+                ${p.pending_capital > 0 ? `<button class="btn btn-sm" data-act="inst-prepay" data-id="${p.id}" data-card="${c.id}">Abonar a capital</button>` : ""}
+              </div>`).join("")}
+            </details>` : ""}
+            ${c.unplanned.length ? `<div class="alert warning cc-unplanned">⚠️ ${c.unplanned.length} compra(s) con cuotas registradas antes del plan de pagos. Cuentan completas en el mes de compra hasta que las revises:
+              ${c.unplanned.map((u) => `<div class="plan-top"><span>${esc(u.description || "Compra")} · ${fmtDate(u.date)} ${u.date.slice(0, 4)} · ${money(u.amount)} (${u.installments} cuotas)</span>
+                <button class="btn btn-sm" data-act="inst-review" data-id="${u.id}">Revisar</button></div>`).join("")}</div>` : ""}
             <div class="cc-actions">
               <button class="btn btn-sm btn-primary" data-act="pay-card" data-id="${c.id}">Registrar pago</button>
               <button class="btn btn-sm" data-act="buy-card" data-id="${c.id}">Registrar compra</button>
@@ -1167,6 +1235,18 @@
         amount: c.balance > 0 ? c.balance : "", description: `Pago ${c.name}` });
     },
     "buy-card": (id) => openTransactionForm(null, { type: "expense", payment_method: "card", card_id: Number(id) }),
+    "inst-prepay": (id, el) => {
+      const card = state.cards.find((c) => c.id === Number(el.dataset.card));
+      const plan = card.plans.find((p) => p.id === Number(id));
+      openTransactionForm(null, {
+        type: "card_payment", card_id: card.id, payment_method: "transfer", applies_to: plan.id,
+        amount: plan.pending_capital, description: `Abono a capital: ${plan.description || "compra a cuotas"}`,
+      });
+    },
+    "inst-review": async (id) => {
+      try { openTransactionForm(await api("GET", `/api/transactions/${id}`)); }
+      catch (err) { toast(err.message, true); }
+    },
     "buy-debit": (id) => openTransactionForm(null, { type: "expense", payment_method: "debit", card_id: Number(id) }),
     "card-tx": (id) => {
       Object.assign(state.txFilters, { type: "", category_id: "", card_id: String(id), payment_method: "", q: "" });
