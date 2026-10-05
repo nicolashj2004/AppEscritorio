@@ -170,6 +170,40 @@ END;
 """
 
 
+# Plan de pagos de las compras a cuotas y vista "ledger": lo que cuenta en cada mes
+# (los movimientos normales + cada cuota y sus intereses en lugar de la compra completa)
+INSTALLMENTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS installment_schedule (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    purchase_id    INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+    number         INTEGER NOT NULL,
+    statement_date TEXT    NOT NULL,
+    due_date       TEXT    NOT NULL,
+    period         TEXT    NOT NULL,
+    capital        REAL    NOT NULL,
+    interest       REAL    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sched_purchase ON installment_schedule(purchase_id);
+CREATE INDEX IF NOT EXISTS idx_sched_period ON installment_schedule(period);
+
+DROP VIEW IF EXISTS ledger;
+CREATE VIEW ledger AS
+SELECT id, date, description, amount, type, category_id, payment_method, card_id, period
+  FROM transactions
+ WHERE NOT (financed = 1 AND type = 'expense' AND installments > 1)
+UNION ALL
+SELECT -s.id, s.due_date, t.description, s.capital, 'expense', t.category_id, 'card',
+       t.card_id, s.period
+  FROM installment_schedule s JOIN transactions t ON t.id = s.purchase_id
+UNION ALL
+SELECT -s.id - 1000000000, s.due_date, t.description, s.interest, 'expense',
+       (SELECT CAST(value AS INTEGER) FROM settings WHERE key = 'interest_category_id'),
+       'card', t.card_id, s.period
+  FROM installment_schedule s JOIN transactions t ON t.id = s.purchase_id
+ WHERE s.interest > 0;
+"""
+
+
 def migrate(conn):
     cols = {r[1] for r in conn.execute("PRAGMA table_info(transactions)")}
     if "period" not in cols:
@@ -179,6 +213,21 @@ def migrate(conn):
         conn.execute("ALTER TABLE cards ADD COLUMN kind TEXT NOT NULL DEFAULT 'credit'")
     if "due_next_month" not in card_cols:  # 1: el pago cae el mes siguiente al corte
         conn.execute("ALTER TABLE cards ADD COLUMN due_next_month INTEGER")
+    tx_cols = {r[1] for r in conn.execute("PRAGMA table_info(transactions)")}
+    if "financed" not in tx_cols:  # 1: compra a cuotas que se reparte mes a mes
+        conn.execute("ALTER TABLE transactions ADD COLUMN financed INTEGER NOT NULL DEFAULT 0")
+    if "rate" not in tx_cols:  # tasa de interés mensual (%) de la compra a cuotas
+        conn.execute("ALTER TABLE transactions ADD COLUMN rate REAL")
+    if "applies_to" not in tx_cols:  # abono a capital: compra a cuotas a la que se aplica
+        conn.execute("ALTER TABLE transactions ADD COLUMN applies_to INTEGER "
+                     "REFERENCES transactions(id) ON DELETE SET NULL")
+    conn.executescript(INSTALLMENTS_SCHEMA)
+    if not conn.execute("SELECT 1 FROM settings WHERE key = 'interest_category_id'").fetchone():
+        row = conn.execute("SELECT id FROM categories WHERE type = 'expense' AND name = 'Intereses'").fetchone()
+        cat_id = row[0] if row else conn.execute(
+            "INSERT INTO categories (name, type, color, icon) VALUES ('Intereses', 'expense', '#e34948', '💸')"
+        ).lastrowid
+        conn.execute("INSERT INTO settings (key, value) VALUES ('interest_category_id', ?)", (str(cat_id),))
     inv_cols = {r[1] for r in conn.execute("PRAGMA table_info(investments)")}
     if "currency" not in inv_cols:
         conn.execute("ALTER TABLE investments ADD COLUMN currency TEXT NOT NULL DEFAULT 'COP'")
@@ -189,12 +238,12 @@ def init_db(db_path):
     conn = connect(db_path)
     try:
         conn.executescript(SCHEMA)
-        migrate(conn)
         if conn.execute("SELECT COUNT(*) FROM categories").fetchone()[0] == 0:
             conn.executemany(
                 "INSERT INTO categories (name, type, color, icon) VALUES (?, ?, ?, ?)",
                 DEFAULT_CATEGORIES,
             )
+        migrate(conn)
         conn.execute(
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('currency', 'COP')"
         )

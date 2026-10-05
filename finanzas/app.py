@@ -9,6 +9,7 @@ from datetime import date
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 
 from . import db
+from . import installments as inst
 from . import investments as inv
 
 MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
@@ -191,7 +192,12 @@ def card_summaries(conn, month):
             """,
             (end, end, start, end, start, end, c["id"]),
         ).fetchone()
-        balance = c["initial_balance"] + agg[0] - agg[1]
+        # Los intereses de las compras a cuotas se suman a la deuda en cada corte
+        interest = conn.execute(
+            """SELECT COALESCE(SUM(s.interest), 0) FROM installment_schedule s
+               JOIN transactions t ON t.id = s.purchase_id
+               WHERE t.card_id = ? AND s.statement_date < ?""", (c["id"], end)).fetchone()[0]
+        balance = c["initial_balance"] + agg[0] - agg[1] + interest
         c["balance"] = round(balance, 2)
         c["available"] = round(c["credit_limit"] - balance, 2)
         c["utilization"] = (
@@ -201,8 +207,35 @@ def card_summaries(conn, month):
         c["month_paid"] = agg[3]
         c["due_next_month"] = due_in_next_month(c)
         c["cut_date"], c["due_date"] = card_dates(c, month)
+        c["plans"] = inst.plans_for_card(conn, c["id"], month)
+        # Pago estimado del corte de este mes: cuotas del corte + compras de contado
+        # hechas entre el corte anterior y este
+        if c["cut_date"]:
+            prev_cut = card_dates(c, shift_month(month, -1))[0]
+            c["statement_payment"] = round(conn.execute(
+                """SELECT COALESCE(SUM(amount), 0) FROM transactions
+                   WHERE card_id = ? AND type = 'expense'
+                     AND NOT (financed = 1 AND installments > 1)
+                     AND date > ? AND date <= ?""", (c["id"], prev_cut, c["cut_date"])
+            ).fetchone()[0] + conn.execute(
+                """SELECT COALESCE(SUM(s.capital + s.interest), 0) FROM installment_schedule s
+                   JOIN transactions t ON t.id = s.purchase_id
+                   WHERE t.card_id = ? AND s.statement_date = ?""", (c["id"], c["cut_date"])
+            ).fetchone()[0], 2)
+        else:
+            c["statement_payment"] = None
+        # Compras con cuotas registradas antes del plan de pagos: el usuario las revisa
+        # (solo las que aún tendrían cuotas por pagar en este mes)
+        c["unplanned"] = [
+            u for u in rows(conn.execute(
+                """SELECT id, date, description, amount, installments FROM transactions
+                   WHERE card_id = ? AND type = 'expense' AND installments > 1 AND financed = 0
+                     AND period <= ? ORDER BY date DESC""", (c["id"], month)))
+            if shift_month(u["date"][:7], u["installments"]) >= month
+        ]
         if c["kind"] == "debit":  # sin cupo ni deuda: solo se resumen sus gastos
-            c.update(balance=0, available=0, utilization=0, month_paid=0)
+            c.update(balance=0, available=0, utilization=0, month_paid=0, plans=[],
+                     statement_payment=None, unplanned=[])
     return cards
 
 
@@ -213,7 +246,7 @@ def category_summaries(conn, month):
             SELECT c.*,
                    COALESCE(b.amount, c.default_budget) AS budget,
                    b.amount IS NOT NULL AS budget_custom,
-                   COALESCE((SELECT SUM(t.amount) FROM transactions t
+                   COALESCE((SELECT SUM(t.amount) FROM ledger t
                              WHERE t.category_id = c.id
                                AND (t.type = c.type
                                     OR (c.type = 'expense' AND t.type = 'card_payment'))
@@ -235,7 +268,7 @@ def month_totals(conn, month):
           COALESCE(SUM(CASE WHEN type = 'expense' THEN amount END), 0) AS expense,
           COALESCE(SUM(CASE WHEN type = 'card_payment' THEN amount END), 0) AS card_payments,
           COUNT(*) AS count
-        FROM transactions WHERE period = ?
+        FROM ledger WHERE period = ?
         """,
         (month,),
     ).fetchone()
@@ -284,7 +317,7 @@ def build_dashboard(conn, month):
         reverse=True,
     )
     uncategorized = conn.execute(
-        """SELECT COALESCE(SUM(amount), 0) FROM transactions
+        """SELECT COALESCE(SUM(amount), 0) FROM ledger
            WHERE type = 'expense' AND category_id IS NULL AND period = ?""",
         (month,),
     ).fetchone()[0]
@@ -307,7 +340,7 @@ def build_dashboard(conn, month):
         last = days_in_month(m)
         per_day = {}
         for tx_date, amount in conn.execute(
-            "SELECT date, amount FROM transactions WHERE type = 'expense' AND period = ?",
+            "SELECT date, amount FROM ledger WHERE type = 'expense' AND period = ?",
             (m,),
         ):
             day = 1 if tx_date < month_start(m) else \
@@ -321,7 +354,7 @@ def build_dashboard(conn, month):
 
     by_method = rows(
         conn.execute(
-            """SELECT payment_method, SUM(amount) AS total FROM transactions
+            """SELECT payment_method, SUM(amount) AS total FROM ledger
                WHERE type = 'expense' AND period = ?
                GROUP BY payment_method ORDER BY total DESC""",
             (month,),
@@ -332,7 +365,7 @@ def build_dashboard(conn, month):
         conn.execute(
             """SELECT t.*, c.name AS category_name, c.icon AS category_icon,
                       c.color AS category_color, k.name AS card_name
-               FROM transactions t
+               FROM ledger t
                LEFT JOIN categories c ON c.id = t.category_id
                LEFT JOIN cards k ON k.id = t.card_id
                WHERE t.type = 'expense' AND t.period = ?
@@ -409,6 +442,12 @@ def build_dashboard(conn, month):
         "card_totals": card_totals,
         "alerts": alerts,
         "pending_recurring": len(pending),
+        "installments_ahead": [
+            {"month": m, "amount": round(conn.execute(
+                """SELECT COALESCE(SUM(capital + interest), 0) FROM installment_schedule
+                   WHERE period = ?""", (m,)).fetchone()[0], 2)}
+            for m in (shift_month(month, i) for i in range(0, 12))
+        ],
         "investments": inv.total_value(conn, month, next_month_start(month), "COP"),
     }
 
@@ -520,6 +559,7 @@ def create_app(db_path=None):
                WHERE id = ?""",
             (*card_payload(body()), card_id),
         )
+        inst.regenerate_card(c, card_id)
         c.commit()
         return jsonify(one(c, "SELECT * FROM cards WHERE id = ?", (card_id,)))
 
@@ -678,9 +718,25 @@ def create_app(db_path=None):
         period = req_str(data, "period", required=False) or default_period(c, ttype, tx_date)
         if not MONTH_RE.match(period):
             raise ApiError("El mes al que corresponde es inválido, use AAAA-MM")
+        # Compra a cuotas con plan de pagos: cada mes cuenta solo la cuota
+        financed = 1 if (ttype == "expense" and method == "card" and installments > 1
+                         and str(data.get("financed", "")).lower() in ("1", "true")) else 0
+        rate = None
+        if financed:
+            rate = req_num(data, "rate", required=False, default=None, minimum=0)
+            if rate is None:
+                rate = c.execute("SELECT interest_rate FROM cards WHERE id = ?",
+                                 (card_id,)).fetchone()[0]
+        # Abono a capital de una compra a cuotas (solo en pagos a la tarjeta)
+        applies_to = opt_id(data, "applies_to") if ttype == "card_payment" else None
+        if applies_to is not None:
+            target = c.execute("SELECT card_id, financed FROM transactions WHERE id = ?",
+                               (applies_to,)).fetchone()
+            if not target or not target["financed"] or target["card_id"] != card_id:
+                raise ApiError("El abono debe ser a una compra a cuotas de esa tarjeta")
         return (tx_date, req_str(data, "description", required=False), amount, ttype,
                 category_id, method, card_id, installments,
-                req_str(data, "notes", required=False), period)
+                req_str(data, "notes", required=False), period, financed, rate, applies_to)
 
     def require_card(c, card_id, kind):
         row = c.execute("SELECT kind FROM cards WHERE id = ?", (card_id,)).fetchone()
@@ -689,6 +745,11 @@ def create_app(db_path=None):
         if row["kind"] != kind:
             raise ApiError("Esa tarjeta es de crédito" if row["kind"] == "credit"
                            else "Esa tarjeta es débito")
+
+    def refresh_plans(c, tx_id, *targets):
+        """Recalcula el plan de la compra y el de las compras a las que se abonó."""
+        for purchase in {tx_id, *targets} - {None}:
+            inst.regenerate(c, purchase)
 
     TX_SELECT = """
         SELECT t.*, c.name AS category_name, c.icon AS category_icon,
@@ -723,7 +784,71 @@ def create_app(db_path=None):
             like = f"%{request.args['q']}%"
             params += [like, like]
         sql = f"{TX_SELECT} WHERE {' AND '.join(where)} ORDER BY t.date DESC, t.id DESC"
-        return rows(conn().execute(sql, params))
+        result = rows(conn().execute(sql, params))
+        for t in result:
+            # Una compra a cuotas no suma completa: suman sus cuotas en cada mes
+            t["counts"] = not (t["financed"] and t["type"] == "expense" and t["installments"] > 1)
+        return sorted(result + installment_rows(month), key=lambda t: (t["date"], t["id"]),
+                      reverse=True)
+
+    def installment_rows(month):
+        """Cuotas (y sus intereses) que se pagan en `month`, como filas del listado."""
+        args = request.args
+        types = (args.get("type") or "").split(",")
+        if args.get("type") and "expense" not in types:
+            return []
+        if args.get("payment_method") not in (None, "", "card"):
+            return []
+        interest_cat = inst.interest_category_id(conn())
+        out = []
+        for r in conn().execute(
+                f"""SELECT s.*, t.date AS purchase_date, t.description, t.installments,
+                           t.category_id, t.card_id,
+                           t.notes, c.name AS category_name, c.icon AS category_icon,
+                           c.color AS category_color, k.name AS card_name, k.color AS card_color,
+                           k.kind AS card_kind
+                    FROM installment_schedule s
+                    JOIN transactions t ON t.id = s.purchase_id
+                    LEFT JOIN categories c ON c.id = t.category_id
+                    LEFT JOIN cards k ON k.id = t.card_id
+                    WHERE s.period = ?""", (month,)):
+            r = dict(r)
+            label = f"Cuota {r['number']}/{r['installments']}"
+            for part, amount, cat in (("capital", r["capital"], r["category_id"]),
+                                      ("interest", r["interest"], interest_cat)):
+                if amount <= 0:
+                    continue
+                row = {
+                    "id": -r["id"] if part == "capital" else -r["id"] - 1000000000,
+                    "installment_of": r["purchase_id"], "installment_label": label,
+                    "installment_part": part, "purchase_date": r["purchase_date"],
+                    "date": r["due_date"], "period": r["period"],
+                    "description": r["description"] if part == "capital"
+                    else f"Intereses: {r['description']}",
+                    "amount": amount, "type": "expense", "category_id": cat,
+                    "payment_method": "card", "card_id": r["card_id"], "installments": 1,
+                    "notes": "", "counts": True, "card_name": r["card_name"],
+                    "card_color": r["card_color"], "card_kind": r["card_kind"],
+                }
+                if part == "capital":
+                    row.update(category_name=r["category_name"], category_icon=r["category_icon"],
+                               category_color=r["category_color"])
+                else:
+                    ic = conn().execute("SELECT name, icon, color FROM categories WHERE id = ?",
+                                        (cat,)).fetchone()
+                    row.update(category_name=ic and ic["name"], category_icon=ic and ic["icon"],
+                               category_color=ic and ic["color"])
+                out.append(row)
+        # Mismos filtros que los movimientos normales
+        if args.get("category_id"):
+            want = None if args["category_id"] == "none" else int(args["category_id"])
+            out = [o for o in out if o["category_id"] == want]
+        if args.get("card_id"):
+            out = [o for o in out if str(o["card_id"]) == args["card_id"]]
+        if args.get("q"):
+            q = args["q"].lower()
+            out = [o for o in out if q in (o["description"] or "").lower()]
+        return out
 
     @app.get("/api/transactions")
     def list_transactions():
@@ -740,29 +865,40 @@ def create_app(db_path=None):
             ensure_exists(c, "recurring", recurring_id)
             if c.execute(
                 "SELECT 1 FROM transactions WHERE recurring_id = ? AND period = ?",
-                (recurring_id, payload[-1]),
+                (recurring_id, payload[9]),
             ).fetchone():
                 raise ApiError("Este fijo ya está registrado en ese mes")
         cur = c.execute(
             """INSERT INTO transactions (date, description, amount, type, category_id,
-                   payment_method, card_id, installments, notes, period, recurring_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   payment_method, card_id, installments, notes, period, financed, rate,
+                   applies_to, recurring_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (*payload, recurring_id),
         )
+        refresh_plans(c, cur.lastrowid, payload[12])
         c.commit()
         return jsonify(one(c, f"{TX_SELECT} WHERE t.id = ?", (cur.lastrowid,))), 201
+
+    @app.get("/api/transactions/<int:tx_id>")
+    def get_transaction(tx_id):
+        ensure_exists(conn(), "transactions", tx_id)
+        return jsonify(one(conn(), f"{TX_SELECT} WHERE t.id = ?", (tx_id,)))
 
     @app.put("/api/transactions/<int:tx_id>")
     def update_transaction(tx_id):
         c = conn()
         ensure_exists(c, "transactions", tx_id)
+        old_target = c.execute("SELECT applies_to FROM transactions WHERE id = ?",
+                               (tx_id,)).fetchone()[0]
+        payload = tx_payload(c, body())
         c.execute(
             """UPDATE transactions SET date = ?, description = ?, amount = ?, type = ?,
                    category_id = ?, payment_method = ?, card_id = ?, installments = ?,
-                   notes = ?, period = ?
+                   notes = ?, period = ?, financed = ?, rate = ?, applies_to = ?
                WHERE id = ?""",
-            (*tx_payload(c, body()), tx_id),
+            (*payload, tx_id),
         )
+        refresh_plans(c, tx_id, payload[12], old_target)
         c.commit()
         return jsonify(one(c, f"{TX_SELECT} WHERE t.id = ?", (tx_id,)))
 
@@ -770,7 +906,9 @@ def create_app(db_path=None):
     def delete_transaction(tx_id):
         c = conn()
         ensure_exists(c, "transactions", tx_id)
+        target = c.execute("SELECT applies_to FROM transactions WHERE id = ?", (tx_id,)).fetchone()[0]
         c.execute("DELETE FROM transactions WHERE id = ?", (tx_id,))
+        refresh_plans(c, None, target)
         c.commit()
         return "", 204
 
