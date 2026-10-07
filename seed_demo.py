@@ -42,8 +42,8 @@ def main():
             (name, bank, last4, limit, initial, cut, due, color))
         cards.append(cur.lastrowid)
     debit_card = conn.execute(
-        """INSERT INTO cards (name, bank, last4, color, kind)
-           VALUES ('Débito Ahorros', 'Bancolombia', '7712', '#1baf7a', 'debit')""").lastrowid
+        """INSERT INTO cards (name, bank, last4, color, kind, initial_balance)
+           VALUES ('Débito Ahorros', 'Bancolombia', '7712', '#1baf7a', 'debit', 300000)""").lastrowid
 
     rec = [
         ("Salario", 6_500_000, "income", "Salario", "transfer", None, 25),
@@ -75,6 +75,11 @@ def main():
     for back in range(5, -1, -1):
         month = shift_month(this_month, -back)
         last_day = today.day if month == this_month else 28
+        # Recarga mensual de la tarjeta débito (parte del salario para transporte y almuerzos)
+        conn.execute(
+            """INSERT INTO transactions (date, description, amount, type, payment_method, card_id)
+               VALUES (?, 'Recarga Bancolombia', 900000, 'card_payment', 'transfer', ?)""",
+            (day_in_month(month, 1), debit_card))
         for rid, (desc, amount, rtype, cname, method, card, day) in zip(rec_ids, rec):
             if month == this_month and day > today.day:
                 continue
