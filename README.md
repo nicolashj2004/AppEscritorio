@@ -22,7 +22,9 @@ el comportamiento. Los datos se guardan en una base de datos SQLite **en tu equi
   al corte); compras en cuotas; registro de pagos (los pagos a la
   tarjeta reducen la deuda y **no** cuentan en el total de gastos, para no contar doble; si les
   asignas una categoría, suman al gasto y presupuesto de esa categoría).
-  Las tarjetas débito registran con cuál pagaste cada gasto y cuánto gastas con cada una.
+  Las tarjetas débito tienen un **saldo**: se recargan (p. ej. la parte del salario que envías
+  a Bancolombia para transporte y almuerzos) y cada gasto pagado con ellas lo descuenta. Las
+  recargas no cuentan como gasto ni como ingreso.
 - **Compras a cuotas**: cada compra tiene su número de cuotas y su propia tasa de interés
   mensual. Cada mes cuenta solo la cuota que se paga (capital + intereses, con los intereses en
   la categoría *Intereses*); la tarjeta muestra el plan de cada compra (cuota actual, saldo y

@@ -194,7 +194,7 @@
       if (f.type === "checkbox") {
         html = `<input type="checkbox" id="${id}"><label for="${id}">${esc(f.label)}</label>`;
       } else {
-        html = `<label for="${id}">${esc(f.label)}</label>`;
+        html = `<label for="${id}">${esc(typeof f.label === "function" ? f.label(current) : f.label)}</label>`;
         if (f.type === "select") html += `<select id="${id}"></select>`;
         else if (f.type === "textarea") html += `<textarea id="${id}" rows="2"></textarea>`;
         else if (f.type === "seg") {
@@ -238,6 +238,10 @@
       fields.forEach((f) => {
         fillOptions(f.name);
         inputs[f.name].wrap.style.display = !f.showIf || f.showIf(current) ? "" : "none";
+        if (typeof f.label === "function") {
+          const labelEl = inputs[f.name].wrap.querySelector(`label[for="f_${f.name}"]`);
+          if (labelEl) labelEl.textContent = f.label(current);
+        }
         const hintEl = inputs[f.name].wrap.querySelector(".hint");
         if (hintEl) {
           const text = typeof f.hint === "function" ? f.hint(current) : f.hint;
@@ -306,8 +310,15 @@
     if (v.type === "expense" && v.payment_method === "debit") {
       return [{ value: "", label: "— Sin especificar —" }, ...cardOptions(includeId, "debit")];
     }
+    if (v.type === "card_payment") {
+      // Pago a una tarjeta de crédito o recarga de una débito
+      return [...cardOptions(includeId, "credit").map((o) => ({ ...o, label: `💳 ${o.label}` })),
+        ...cardOptions(includeId, "debit").map((o) => ({ ...o, label: `🏧 ${o.label} (recarga)` }))];
+    }
     return cardOptions(includeId, "credit");
   }
+  const isTopup = (v) => v.type === "card_payment"
+    && (state.cards.find((c) => c.id === Number(v.card_id)) || {}).kind === "debit";
   const showTxCard = (v) => v.type === "card_payment" || (v.type === "expense" && v.payment_method === "card")
     || (v.type === "expense" && v.payment_method === "debit" && debitCards().length > 0);
 
@@ -327,11 +338,11 @@
     let periodTouched = !!tx || !!preset.period;
     const isInstallment = (v) => v.type === "expense" && v.payment_method === "card" && Number(v.installments) > 1;
     openForm({
-      title: tx ? "Editar movimiento" : preset.recurring_id ? "Registrar fijo del mes" : "Nuevo movimiento",
+      title: tx ? "Editar movimiento" : preset.title || (preset.recurring_id ? "Registrar fijo del mes" : "Nuevo movimiento"),
       values,
       fields: [
         { name: "type", label: "Tipo", type: "seg", full: true,
-          options: Object.entries(TX_TYPES).map(([value, label]) => ({ value, label })) },
+          options: Object.entries(TX_TYPES).map(([value, label]) => ({ value, label: value === "card_payment" ? "Pago / recarga tarjeta" : label })) },
         { name: "amount", label: "Monto", type: "number", step: "any", min: 0, placeholder: "0" },
         { name: "date", label: "Fecha", type: "date" },
         { name: "period", label: "Corresponde al mes", type: "month", full: true,
@@ -340,13 +351,15 @@
         { name: "description", label: "Descripción", type: "text", full: true, placeholder: "Ej: Mercado del mes" },
         { name: "category_id", label: "Categoría", type: "select", full: true,
           options: (v) => categoryOptions(v.type === "income" ? "income" : "expense"),
+          showIf: (v) => !isTopup(v),
           hint: (v) => (v.type === "card_payment" ? "Opcional: el pago sumará al gasto y presupuesto de esta categoría" : "") },
         { name: "payment_method", label: "Medio de pago", type: "select",
           options: (v) => Object.entries(METHODS)
             .filter(([k]) => v.type === "expense" || k !== "card")
             .map(([value, label]) => ({ value, label })) },
         { name: "card_id", label: "Tarjeta", type: "select",
-          options: (v) => txCardOptions(v, tx && tx.card_id), showIf: showTxCard },
+          options: (v) => txCardOptions(v, tx && tx.card_id), showIf: showTxCard,
+          hint: (v) => (isTopup(v) ? "Recarga: suma al saldo de la tarjeta débito. No cuenta como gasto ni como ingreso." : "") },
         { name: "installments", label: "Número de cuotas", type: "number", min: 1, step: 1,
           showIf: (v) => v.type === "expense" && v.payment_method === "card" },
         { name: "financed", label: "Repartir en cuotas: cada mes cuenta solo la cuota", type: "checkbox", full: true,
@@ -403,8 +416,10 @@
         { name: "name", label: "Nombre", type: "text", placeholder: "Ej: Visa Oro" },
         { name: "bank", label: "Banco / franquicia", type: "text", placeholder: "Ej: Bancolombia" },
         { name: "credit_limit", label: "Cupo total", type: "number", step: "any", min: 0, showIf: credit },
-        { name: "initial_balance", label: "Deuda actual al registrarla", type: "number", step: "any", min: 0,
-          hint: "Lo que ya debías antes de empezar a usar la app", showIf: credit },
+        { name: "initial_balance", type: "number", step: "any", min: 0,
+          label: (v) => (v.kind === "debit" ? "Saldo actual al registrarla" : "Deuda actual al registrarla"),
+          hint: (v) => (v.kind === "debit" ? "Lo que tiene la cuenta hoy; luego se suma cada recarga y se resta cada gasto"
+            : "Lo que ya debías antes de empezar a usar la app") },
         { name: "cut_day", label: "Día de corte", type: "number", min: 1, step: 1, showIf: credit },
         { name: "due_day", label: "Día límite de pago", type: "number", min: 1, step: 1, showIf: credit },
         { name: "due_next_month", label: "El pago de cada corte se hace", type: "select", full: true, showIf: credit,
@@ -521,6 +536,8 @@
         delta: ct.limit ? `Uso del cupo: <b class="${utilClass(ct.utilization) === "bad" ? "neg" : ""}">${pct(ct.utilization)}</b>` : `<a href="#tarjetas">Agrega una tarjeta</a>` },
       { label: "Cupo disponible", value: money(ct.available),
         delta: ct.limit ? `De un cupo total de ${money(ct.limit)}` : "" },
+      ...(d.debit_balance != null ? [{ label: "Saldo en débito", value: `<span class="${d.debit_balance < 0 ? "neg" : ""}">${money(d.debit_balance)}</span>`,
+        delta: `<a href="#tarjetas">Recargar o ver tarjetas</a>` }] : []),
       { label: "Inversiones", value: money(d.investments),
         delta: `<a href="#inversiones">${d.investments ? "Ver portafolio" : "Registra tus inversiones"}</a>` },
     ];
@@ -713,7 +730,8 @@
         <span>${list.length} movimiento(s)</span>
         ${showIncome() ? `<span>Ingresos: <b class="num pos">${money(sum("income"))}</b></span>` : ""}
         ${showExpense() ? `<span>Gastos: <b class="num">${money(sum("expense"))}</b></span>
-        <span>Pagos a tarjetas: <b class="num">${money(sum("card_payment"))}</b></span>` : ""}
+        <span>Pagos a tarjetas: <b class="num">${money(list.filter((t) => t.type === "card_payment" && t.card_kind !== "debit").reduce((s, t) => s + t.amount, 0))}</b></span>
+        <span>Recargas débito: <b class="num">${money(list.filter((t) => t.type === "card_payment" && t.card_kind === "debit").reduce((s, t) => s + t.amount, 0))}</b></span>` : ""}
       </div>
       <div class="panel" style="padding:0">
         ${list.length ? `<div class="table-wrap"><table>
@@ -728,7 +746,7 @@
                 <span class="muted" style="font-size:12px">cada mes cuenta solo la cuota</span></div>` : ""}
               ${t.notes ? `<div class="muted" style="font-size:12px">${esc(t.notes)}</div>` : ""}</td>
             <td>${t.category_name ? `<span class="tag"><span class="dot" style="background:${esc(t.category_color)}"></span>${esc(t.category_icon)} ${esc(t.category_name)}</span>` : '<span class="muted">—</span>'}</td>
-            <td><span class="pill ${t.type}">${TX_TYPES[t.type]}</span></td>
+            <td><span class="pill ${t.type}">${t.type === "card_payment" && t.card_kind === "debit" ? "Recarga" : TX_TYPES[t.type]}</span></td>
             <td>${esc(METHODS[t.payment_method] || t.payment_method)}${t.card_name ? `<div class="muted" style="font-size:12px">${t.card_kind === "debit" ? "🏧" : "💳"} ${esc(t.card_name)}${t.installments > 1 ? ` · ${t.installments} cuotas` : ""}</div>` : ""}</td>
             <td class="right num"><b class="${t.type === "income" ? "pos" : t.counts === false ? "muted" : ""}">${t.type === "income" ? "+" : t.type === "expense" && t.counts !== false ? "−" : ""}${money(t.amount)}</b></td>
             <td class="row-actions">${t.installment_of ? `<span class="muted" style="font-size:12px" title="Las cuotas se calculan desde la compra">automática</span>` : `
@@ -814,11 +832,16 @@
     const debitHtml = debit.map((c) => `
         <div class="panel cc${c.active ? "" : " inactive"}">${face(c, "Débito")}
           <div class="cc-body">
-            <div class="cc-stats" style="grid-template-columns:1fr">
-              <div><span>Gastos del mes con esta tarjeta</span><b class="num">${money(c.month_spent)}</b></div>
+            <div class="debit-balance"><span>Saldo disponible</span>
+              <b class="num ${c.balance < 0 ? "neg" : ""}">${money(c.balance)}</b></div>
+            ${c.balance < 0 ? `<p class="muted" style="font-size:12px;margin:4px 0 0">El saldo es negativo: puede faltar registrar una recarga o el saldo inicial (✏️).</p>` : ""}
+            <div class="cc-stats" style="grid-template-columns:1fr 1fr">
+              <div><span>Recargas del mes</span><b class="num pos">+${money(c.month_topups)}</b></div>
+              <div><span>Gastos del mes</span><b class="num">−${money(c.month_spent)}</b></div>
             </div>
             <div class="cc-actions">
-              <button class="btn btn-sm btn-primary" data-act="buy-debit" data-id="${c.id}">Registrar compra</button>
+              <button class="btn btn-sm btn-primary" data-act="topup-debit" data-id="${c.id}">+ Recargar</button>
+              <button class="btn btn-sm" data-act="buy-debit" data-id="${c.id}">Registrar compra</button>
               <button class="btn btn-sm btn-ghost" data-act="card-tx" data-id="${c.id}">Movimientos</button>
               ${editButtons(c)}
             </div>
@@ -1246,6 +1269,11 @@
     "inst-review": async (id) => {
       try { openTransactionForm(await api("GET", `/api/transactions/${id}`)); }
       catch (err) { toast(err.message, true); }
+    },
+    "topup-debit": (id) => {
+      const c = state.cards.find((x) => x.id === Number(id));
+      openTransactionForm(null, { type: "card_payment", card_id: c.id, payment_method: "transfer",
+        description: `Recarga ${c.name}`, title: `Recargar ${c.name}` });
     },
     "buy-debit": (id) => openTransactionForm(null, { type: "expense", payment_method: "debit", card_id: Number(id) }),
     "card-tx": (id) => {

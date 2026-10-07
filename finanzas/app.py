@@ -233,8 +233,11 @@ def card_summaries(conn, month):
                      AND period <= ? ORDER BY date DESC""", (c["id"], month)))
             if shift_month(u["date"][:7], u["installments"]) >= month
         ]
-        if c["kind"] == "debit":  # sin cupo ni deuda: solo se resumen sus gastos
-            c.update(balance=0, available=0, utilization=0, month_paid=0, plans=[],
+        if c["kind"] == "debit":
+            # Saldo = saldo inicial + recargas - gastos pagados con la tarjeta
+            debit_balance = c["initial_balance"] + agg[1] - agg[0]
+            c.update(balance=round(debit_balance, 2), available=round(debit_balance, 2),
+                     utilization=0, month_topups=agg[3], month_paid=0, plans=[],
                      statement_payment=None, unplanned=[])
     return cards
 
@@ -374,7 +377,9 @@ def build_dashboard(conn, month):
         )
     )
 
-    cards = [c for c in card_summaries(conn, month) if c["active"] and c["kind"] == "credit"]
+    all_cards = [c for c in card_summaries(conn, month) if c["active"]]
+    cards = [c for c in all_cards if c["kind"] == "credit"]
+    debit_cards = [c for c in all_cards if c["kind"] == "debit"]
     card_totals = {
         "limit": sum(c["credit_limit"] for c in cards),
         "balance": sum(c["balance"] for c in cards),
@@ -418,6 +423,11 @@ def build_dashboard(conn, month):
                     alerts.append({"level": "info",
                                    "text": f"📅 {c['name']}: fecha límite de pago en {days} "
                                            f"día(s) ({dues[0]})"})
+    for c in debit_cards:
+        if c["balance"] < 0:
+            alerts.append({"level": "warning",
+                           "text": f"🏧 {c['name']}: el saldo quedó negativo; registra la recarga "
+                                   f"o ajusta el saldo inicial"})
     pending = pending_recurring(conn, month)
     if pending:
         alerts.append({"level": "info",
@@ -440,6 +450,7 @@ def build_dashboard(conn, month):
         "top_expenses": top_expenses,
         "cards": cards,
         "card_totals": card_totals,
+        "debit_balance": round(sum(c["balance"] for c in debit_cards), 2) if debit_cards else None,
         "alerts": alerts,
         "pending_recurring": len(pending),
         "installments_ahead": [
@@ -520,8 +531,9 @@ def create_app(db_path=None):
                   req_str(data, "last4", required=False)[-4:])
         tail = (req_str(data, "color", required=False) or "#4f46e5",
                 1 if data.get("active", True) else 0, kind)
-        if kind == "debit":  # una tarjeta débito no tiene cupo, corte ni pago
-            return (*common, 0, 0, None, None, 0, *tail, None)
+        if kind == "debit":  # sin cupo, corte ni pago; solo un saldo que se recarga
+            return (*common, 0, req_num(data, "initial_balance", required=False, minimum=0),
+                    None, None, 0, *tail, None)
         due_next = data.get("due_next_month")
         due_next = None if due_next in (None, "") else int(str(due_next).lower() in ("1", "true"))
         return (*common,
@@ -690,10 +702,15 @@ def create_app(db_path=None):
 
         if ttype == "card_payment":
             if card_id is None:
-                raise ApiError("Selecciona la tarjeta a la que abonas")
-            if method == "card":
+                raise ApiError("Selecciona la tarjeta a la que abonas o recargas")
+            if method in ("card", "debit"):
                 method = "transfer"
-            require_card(c, card_id, "credit")
+            kind = c.execute("SELECT kind FROM cards WHERE id = ?", (card_id,)).fetchone()
+            if not kind:
+                raise ApiError("Registro no encontrado", 404)
+            if kind["kind"] == "debit":
+                # Recarga de una tarjeta débito: es plata propia que se mueve, sin categoría
+                category_id = None
         elif ttype == "expense" and method == "card":
             if card_id is None:
                 raise ApiError("Selecciona la tarjeta con la que pagaste")

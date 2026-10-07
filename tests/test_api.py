@@ -310,14 +310,14 @@ class ApiTest(unittest.TestCase):
         self.post("/api/transactions", {"date": "2026-10-03", "amount": 5, "type": "expense",
                                         "payment_method": "debit"})
         cards = {c["name"]: c for c in self.client.get("/api/cards?month=2026-10").get_json()}
-        self.assertEqual((cards["Débito Nu"]["month_spent"], cards["Débito Nu"]["balance"]), (50, 0))
+        # Sin recargas el saldo queda negativo por el gasto
+        self.assertEqual((cards["Débito Nu"]["month_spent"], cards["Débito Nu"]["balance"]), (50, -50))
         d = self.client.get("/api/dashboard?month=2026-10").get_json()
         self.assertEqual([c["name"] for c in d["cards"]], ["Visa"])
         self.assertEqual(d["card_totals"]["limit"], 1000)
         # Tipos de tarjeta incorrectos
         bad = [
             {"type": "expense", "payment_method": "card", "card_id": debit["id"]},
-            {"type": "card_payment", "card_id": debit["id"]},
             {"type": "expense", "payment_method": "debit", "card_id": credit["id"]},
         ]
         for extra in bad:
@@ -427,6 +427,32 @@ class ApiTest(unittest.TestCase):
             "name": "Visa", "credit_limit": 1000, "cut_day": 30, "due_day": 15, "interest_rate": 1.5})
         self.assertEqual(self.client.get("/api/dashboard?month=2026-11").get_json()["totals"]["expense"],
                          round(100 + 300 * 0.015 + 100, 2))
+
+    def test_debit_topups(self):
+        debit = self.post("/api/cards", {"kind": "debit", "name": "Bancolombia", "initial_balance": 100})
+        self.assertEqual(debit["initial_balance"], 100)
+        mercado = self.category_id("Mercado")
+        self.post("/api/transactions", {"date": "2026-10-01", "amount": 3000, "type": "income"})
+        # Recarga desde el salario: no es gasto ni ingreso y no lleva categoría
+        topup = self.post("/api/transactions", {"date": "2026-10-02", "amount": 400, "type": "card_payment",
+                                                "card_id": debit["id"], "category_id": mercado,
+                                                "payment_method": "debit"})
+        self.assertIsNone(topup["category_id"])
+        self.assertEqual(topup["payment_method"], "transfer")
+        self.post("/api/transactions", {"date": "2026-10-03", "amount": 30, "type": "expense",
+                                        "payment_method": "debit", "card_id": debit["id"],
+                                        "category_id": mercado})
+        card = self.client.get("/api/cards?month=2026-10").get_json()[0]
+        self.assertEqual((card["balance"], card["month_topups"], card["month_spent"]), (470, 400, 30))
+        totals = self.client.get("/api/dashboard?month=2026-10").get_json()["totals"]
+        self.assertEqual((totals["income"], totals["expense"]), (3000, 30))
+        cats = {c["name"]: c["spent"] for c in self.client.get("/api/categories?month=2026-10").get_json()}
+        self.assertEqual(cats["Mercado"], 30)
+        # El saldo de meses anteriores se arrastra
+        self.post("/api/transactions", {"date": "2026-11-05", "amount": 70, "type": "expense",
+                                        "payment_method": "debit", "card_id": debit["id"]})
+        nov = self.client.get("/api/cards?month=2026-11").get_json()[0]
+        self.assertEqual((nov["balance"], nov["month_topups"]), (400, 0))
 
     def test_goals_contribution(self):
         goal = self.post("/api/goals", {"name": "Viaje", "target": 1000})
