@@ -67,7 +67,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="v1.${{ github.run_number }}"
-          gh release create "$tag" dist/MisFinanzas.exe \
-            --title "Mis Finanzas $tag" \
-            --notes "Descarga **MisFinanzas.exe** y ábrelo con doble clic. No necesitas instalar nada más. Tus datos se guardan en %LOCALAPPDATA%\\MisFinanzas en tu propio computador." \
-            --latest
+          notes="Descarga **MisFinanzas.exe** y ábrelo con doble clic. No necesitas instalar nada más. Tus datos se guardan en %LOCALAPPDATA%\\MisFinanzas en tu propio computador."
+          # La API de GitHub a veces responde con errores temporales (HTTP 5xx): se reintenta
+          for intento in 1 2 3; do
+            if gh release view "$tag" > /dev/null 2>&1; then
+              # Si un intento anterior alcanzó a crear la versión, solo se sube el archivo
+              gh release upload "$tag" dist/MisFinanzas.exe --clobber && exit 0
+            elif gh release create "$tag" dist/MisFinanzas.exe --title "Mis Finanzas $tag" --notes "$notes" --latest; then
+              exit 0
+            fi
+            echo "Intento $intento falló; se reintenta en 20 segundos"
+            sleep 20
+          done
+          exit 1
